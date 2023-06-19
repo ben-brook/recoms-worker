@@ -34,13 +34,15 @@ function isReqBody(object: any): object is ReqBody {
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const reqBody = await request.json();
+		console.log(1);
+		const encodedReqBody = await request.text();
+		const reqBody = JSON.parse(encodeURIComponent(encodedReqBody));
 		if (!isReqBody(reqBody)) return new Response('Failed');
 
 		const json = JSON.stringify({
 			recommendations: 'hi, test',
 		});
-
+		console.log(2);
 		return new Response(json, {
 			headers: {
 				'content-type': 'application/json;charset=UTF-8',
