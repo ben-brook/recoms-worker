@@ -25,8 +25,26 @@ export interface Env {
 	// MY_QUEUE: Queue;
 }
 
+interface ReqBody {
+	[pic: string]: string;
+}
+function isReqBody(object: any): object is ReqBody {
+	return 'pic' in object;
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		return new Response('Hello World!');
+		const reqBody = await request.json();
+		if (!isReqBody(reqBody)) return new Response('Failed');
+
+		const json = JSON.stringify({
+			recommendations: 'hi, test',
+		});
+
+		return new Response(json, {
+			headers: {
+				'content-type': 'application/json;charset=UTF-8',
+			},
+		});
 	},
 };
