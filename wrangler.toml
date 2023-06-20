@@ -2,6 +2,11 @@ name = "recoms-worker"
 main = "src/worker.ts"
 compatibility_date = "2023-06-16"
 
+[[d1_databases]]
+binding = "DB" # i.e. available in your Worker on env.DB
+database_name = "dev-db-classes"
+database_id = "6c175af6-e8b1-4d3b-b7ab-078be5435239"
+
 # # KV Namespace binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/kv
 # [[kv_namespaces]]
 # binding = "MY_KV_NAMESPACE"
