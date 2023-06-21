@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"deploy": "wrangler publish",
+		"deploy": "export NO_D1_WARNING=true && wrangler deploy",
 		"start": "export NO_D1_WARNING=true && wrangler dev"
 	},
 	"devDependencies": {
