@@ -7,10 +7,9 @@ const AUTH_COOKIE_NAME = 'authCookie';
 interface ReqBody {
 	pic: string;
 	id: string;
-	cookie: string;
 }
 function isReqBody(o: any): o is ReqBody {
-	return 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string' && 'cookie' in o && typeof o.cookie === 'string';
+	return 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
 }
 
 const tempClassificationMap: { [id: string]: string } = {
@@ -20,7 +19,6 @@ const tempClassificationMap: { [id: string]: string } = {
 async function classify(reqBody: ReqBody, env: Env): Promise<string> {
 	// TODO: Interface Constellation when we get access, but for now...
 	const classification = tempClassificationMap[reqBody.id];
-
 	const { success } = await env.DB.prepare('insert into Products (ProductId, Classification, Updated) VALUES (?1, ?2, ?3)')
 		.bind(reqBody.id, classification, Date.now())
 		.run();
@@ -46,8 +44,8 @@ export default {
 		const reqBody = JSON.parse(decodeURIComponent(encodedReqBody));
 		if (!isReqBody(reqBody)) throw new Error('Request body is wrong');
 
-		const cookie = parse(request.headers.get('Cookie') || '');
-		const authCookie = cookie[AUTH_COOKIE_NAME];
+		const cookies = parse(request.headers.get('Cookie') || '');
+		const authCookie = cookies[AUTH_COOKIE_NAME];
 		const historyPromise = env.DB.prepare('select Product, LastVisited from UserHistory where Cookie = ?1').bind(authCookie).all();
 
 		const { success: classSuccess, results: classResults } = await env.DB.prepare(
@@ -58,7 +56,7 @@ export default {
 		if (!classSuccess) throw new Error('Failed to check for product classification');
 
 		let classification: string;
-		if (classResults === undefined) {
+		if (!classResults || classResults.length == 0) {
 			// The picture has never been classified before.
 			classification = await classify(reqBody, env);
 		} else {
@@ -94,7 +92,7 @@ export default {
 		historyObjs.sort((a, b) => a.LastVisited - b.LastVisited);
 
 		const json = JSON.stringify({
-			recommendations: productIdObjs.map(({ ProductId: productId }) => productId).join(', ') + '; ' + reqBody.cookie,
+			recommendations: productIdObjs.map(({ ProductId: productId }) => productId).join(', ') + '; ' + authCookie,
 		});
 		return new Response(json, { headers: { 'content-type': 'application/json;charset=UTF-8' } });
 	},
