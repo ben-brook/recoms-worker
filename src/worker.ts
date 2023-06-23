@@ -93,7 +93,6 @@ async function handleClassification(productId: string, env: Env): Promise<string
 		classification = storedClass;
 		if (Date.now() - lastupdated >= UPDATE_THRESHOLD_MS) {
 			// We classify the picture for next time, but don't wait for it to be classified this time.
-			// TODO: update instead of insert here
 			classify(productId, env);
 		}
 	}
@@ -127,10 +126,18 @@ export default {
 		const { success: historySuccess, results: historyResults } = await historyPromise;
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
 		if (!historySuccess) throw new Error('Failed to get user history');
+		// TODO: do something with this (recommender system)
 		// This typing is guaranteed from the SQL statement.
 		const historyObjs = (historyResults as HistoryCols[]).sort((a, b) => a.lastvisited - b.lastvisited);
 
-		const json = JSON.stringify({ recommendations: similar.join(', ') });
+		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
+		for (const id of similar) {
+			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>`;
+		}
+		recommendations += `<a class="list-group-item" href="/products/2">Sushi</a>`; // TODO: remove
+		recommendations += '</ul>';
+
+		const json = JSON.stringify({ recommendations });
 		const response = new Response(json);
 		response.headers.set('content-type', 'application/json;charset=UTF-8');
 		if (newCookie) {
