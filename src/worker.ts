@@ -21,6 +21,7 @@ async function classify(productId: string, env: Env): Promise<string> {
 	// TODO: Interface Constellation when we get access, but for now...
 	const classification = tempClassificationMap[productId];
 	const { success } = await env.DB.prepare(
+		// ON CONFLICT is a SQLite feature and isn't standard.
 		`INSERT INTO products VALUES (?1, ?2, ?3)
     		ON CONFLICT(productid) DO UPDATE SET
         		classification = excluded.classification,
