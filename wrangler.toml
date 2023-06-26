@@ -1,45 +1,11 @@
 name = "recoms-worker"
 main = "src/worker.ts"
-compatibility_date = "2023-06-16"
+compatibility_date = "2023-06-26"
 
 [[d1_databases]]
-binding = "DB" # i.e. available in your Worker on env.DB
+binding = "DB"
 database_name = "dev-db-classes"
 database_id = "6c175af6-e8b1-4d3b-b7ab-078be5435239"
 
-# # KV Namespace binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/kv
-# [[kv_namespaces]]
-# binding = "MY_KV_NAMESPACE"
-# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
-# # Durable Object binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/durable-objects
-# [[durable_objects]]
-# binding = "MY_DURABLE_OBJECT"
-# class_name = "MyDurableObject"
-
-# # Bucket binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/kv#bucket
-# [[buckets]]
-# binding = "MY_BUCKET"
-# name = "my-bucket"
-# bucket_id = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-
-# # Service binding - For more information: https://developers.cloudflare.com/workers/platform/services
-# [[routes]]
-# binding = "MY_SERVICE"
-# pattern = "/api/*"
-# script = "api.js"
-
-# # Queue binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/queues
-# [[queues]]
-# binding = "MY_QUEUE"
-# name = "my-queue"
-# zone_id = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-
-# [env.production]
-# MY_VARIABLE = "production_value"
-
-# [env.staging]
-# MY_VARIABLE = "staging_value"
-
-# [env.shared]
-# SHARED_VARIABLE = "shared_value"
+[triggers]
+crons = ["0 17 * * fri"]

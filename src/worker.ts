@@ -4,6 +4,7 @@ import { parse } from 'cookie';
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 const AUTH_COOKIE_MAX_AGE_S = 86400 * 365;
 const AUTH_COOKIE_NAME = 'authCookie';
+const HISTORY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface ReqBody {
 	pic: string;
@@ -77,7 +78,7 @@ function handleHistory(headers: Headers, productId: string, env: Env): [Promise<
 }
 
 type ProductCols = { classification: string; lastupdated: number };
-async function handleClassification(productId: string, env: Env): Promise<string> {
+async function handleClassification(productId: string, env: Env, ctx: ExecutionContext): Promise<string> {
 	const { success, results } = await env.DB.prepare('SELECT classification, lastupdated FROM products WHERE productid = ?1')
 		.bind(productId)
 		.all();
@@ -94,7 +95,7 @@ async function handleClassification(productId: string, env: Env): Promise<string
 		classification = storedClass;
 		if (Date.now() - lastupdated >= UPDATE_THRESHOLD_MS) {
 			// We classify the picture for next time, but don't wait for it to be classified this time.
-			classify(productId, env);
+			ctx.waitUntil(classify(productId, env));
 		}
 	}
 
@@ -121,7 +122,7 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const reqBody = await parseRequest(request);
 		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env);
-		const classification = await handleClassification(reqBody.id, env);
+		const classification = await handleClassification(reqBody.id, env, ctx);
 		const similar = await fetchSimilar(reqBody.id, classification, env);
 
 		const { success: historySuccess, results: historyResults } = await historyPromise;
@@ -145,5 +146,9 @@ export default {
 			response.headers.set('Set-Cookie', `${AUTH_COOKIE_NAME}=${newCookie}; Max-Age=${AUTH_COOKIE_MAX_AGE_S}; path=/; secure`);
 		}
 		return response;
+	},
+
+	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+		await env.DB.prepare(`DELETE FROM userhistory WHERE ?1 - lastvisited > ${HISTORY_MAX_AGE_MS}`).bind(Date.now()).run();
 	},
 };

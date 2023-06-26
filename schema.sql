@@ -8,6 +8,5 @@
 DROP TABLE IF EXISTS products;
 CREATE TABLE IF NOT EXISTS products (productid TEXT PRIMARY KEY, classification TEXT, lastupdated INTEGER);
 
-
 DROP TABLE IF EXISTS userhistory;
 CREATE TABLE IF NOT EXISTS userhistory (cookie TEXT, productid TEXT, lastvisited INTEGER, PRIMARY KEY (cookie, productid));
