@@ -160,6 +160,7 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	if (productId === null) {
 		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1').bind(classification);
 	} else {
+		// TODO: possibly remove this?
 		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
 			classification,
 			productId
@@ -185,15 +186,11 @@ async function cbf(
 	)) as [string[], number][];
 
 	const similar = [];
-	for (
-		let i = 0;
-		i <
-		Math.min(
-			NUM_RECOMMENDATIONS,
-			weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
-		);
-		i++
-	) {
+	const upper = Math.min(
+		NUM_RECOMMENDATIONS,
+		weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
+	);
+	for (let i = 0; i < upper; i++) {
 		let bar = 0;
 		whileLoop: while (true) {
 			const rand = Math.random();
@@ -235,7 +232,7 @@ export default {
 		const reqBody = await parseRequest(request);
 		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env, ctx);
 		const productClass = await handleClassification(reqBody.id, env, ctx);
-		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
+		const similarPromise = fetchSimilar(productClass, env);
 
 		const { success: historySuccess, results: historyResults } = await historyPromise;
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
