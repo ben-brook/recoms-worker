@@ -1,10 +1,13 @@
 import { v4 as uuidv4 } from 'uuid';
 import { parse } from 'cookie';
 
-const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
-const AUTH_COOKIE_MAX_AGE_S = 86400 * 365;
+const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
+const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
 const AUTH_COOKIE_NAME = 'authCookie';
-const HISTORY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const HISTORY_MAX_AGE_MS = 27 * 24 * 60 * 60 * 1_000;
+const HISTORY_LAMBDA = 0.1;
+const HISTORY_LIMIT = 20;
+const NUM_RECOMMENDATIONS = 2;
 
 interface ReqBody {
 	pic: string;
@@ -22,11 +25,11 @@ async function classify(productId: string, env: Env): Promise<string> {
 	// TODO: Interface Constellation when we get access, but for now...
 	const classification = tempClassificationMap[productId];
 	const { success } = await env.DB.prepare(
-		// ON CONFLICT is a SQLite feature and isn't standard.
+		// ON CONFLICT is an SQLite feature and isn't standard.
 		`INSERT INTO products VALUES (?1, ?2, ?3)
-    		ON CONFLICT(productid) DO UPDATE SET
-        		classification = excluded.classification,
-        		lastupdated = excluded.lastupdated`
+    	ON CONFLICT(productid) DO UPDATE SET
+        	classification = excluded.classification,
+        	lastupdated = excluded.lastupdated`
 	)
 		.bind(productId, classification, Date.now())
 		.run();
@@ -38,8 +41,8 @@ async function classify(productId: string, env: Env): Promise<string> {
 async function addToHistory(productId: string, cookie: string, env: Env) {
 	const { success } = await env.DB.prepare(
 		`INSERT INTO userhistory VALUES (?1, ?2, ?3)
-		    ON CONFLICT(cookie, productid) DO UPDATE SET
-			    lastvisited = excluded.lastvisited`
+		ON CONFLICT(cookie, productid) DO UPDATE SET
+			lastvisited = excluded.lastvisited`
 	)
 		.bind(cookie, productId, Date.now())
 		.run();
@@ -58,14 +61,39 @@ async function parseRequest(request: Request): Promise<ReqBody> {
 	return reqBody;
 }
 
-type HistoryCols = { productid: string; lastvisited: number };
-function handleHistory(headers: Headers, productId: string, env: Env): [Promise<D1Result<HistoryCols>>, string | null] {
+type HistoryCols = { productid: string; lastvisited: number; classification: string; lastupdated: number };
+function handleHistory(
+	headers: Headers,
+	productId: string,
+	env: Env,
+	ctx: ExecutionContext
+): [Promise<D1Result<HistoryCols>>, string | null] {
 	const cookies = parse(headers.get('Cookie') || '');
 	let authCookie = cookies[AUTH_COOKIE_NAME];
 	let didMakeCookie = false;
 	let promise: Promise<D1Result<HistoryCols>>;
 	if (authCookie) {
-		promise = env.DB.prepare('SELECT productid, lastvisited FROM userhistory WHERE cookie = ?1').bind(authCookie).all();
+		promise = env.DB.prepare(
+			`SELECT
+				userhistory.productid,
+				userhistory.lastvisited,
+				products.classification,
+				products.lastupdated
+			FROM userhistory
+			INNER JOIN products USING (productid)
+			WHERE cookie = ?1
+			ORDER BY lastvisited DESC LIMIT ?2`
+		)
+			.bind(authCookie, HISTORY_LIMIT)
+			.all();
+
+		promise.then(({ success, results }) => {
+			if (!success) return;
+			for (const result of (results as HistoryCols[]).filter((result) => Date.now() - result.lastupdated >= UPDATE_THRESHOLD_MS)) {
+				// We classify the picture for next time, but don't wait for it to be classified this time.
+				ctx.waitUntil(classify(result.productid, env));
+			}
+		});
 	} else {
 		promise = new Promise(() => ({ success: true, results: [] }));
 		didMakeCookie = true;
@@ -75,6 +103,31 @@ function handleHistory(headers: Headers, productId: string, env: Env): [Promise<
 	addToHistory(productId, authCookie, env);
 
 	return [promise, didMakeCookie ? authCookie : null];
+}
+
+function calcClassToWeight(curProductId: string, curClass: string, historyResults: HistoryCols[]) {
+	const historyObjs = historyResults.sort((a, b) => a.lastvisited - b.lastvisited);
+	const classToWeight: Record<string, number> = {};
+
+	let total = 0;
+	for (const [i, classification] of [curClass]
+		// The current product should get shift to the front.
+		.concat(historyObjs.filter(({ productid }) => productid != curProductId).map(({ classification }) => classification))
+		.entries()) {
+		// We integrate the exponential distribution.
+		const increase = (Math.exp(HISTORY_LAMBDA) - 1) / Math.exp(HISTORY_LAMBDA * (i + 1));
+		classToWeight[classification] = increase + (classToWeight[classification] || 0);
+		total += increase;
+	}
+
+	const scale = 1 / total;
+	for (const classification of Object.keys(classToWeight)) {
+		// Scale each weight up such that the total weight is 1. This doesn't feel like the best approach.
+		classToWeight[classification] *= scale;
+		console.log(`${classification}: ${classToWeight[classification]}`);
+	}
+
+	return classToWeight;
 }
 
 type ProductCols = { classification: string; lastupdated: number };
@@ -87,7 +140,7 @@ async function handleClassification(productId: string, env: Env, ctx: ExecutionC
 	const classResults = results as ProductCols[];
 
 	let classification: string;
-	if (!classResults || classResults.length == 0) {
+	if (!classResults || classResults.length === 0) {
 		// The picture has never been classified before.
 		classification = await classify(productId, env);
 	} else {
@@ -102,15 +155,20 @@ async function handleClassification(productId: string, env: Env, ctx: ExecutionC
 	return classification;
 }
 
-async function fetchSimilar(productId: string, classification: string, env: Env): Promise<string[]> {
-	let { success: sameSuccess, results: sameResults } = await env.DB.prepare(
-		'SELECT productid FROM products WHERE classification = ?1 AND NOT productid = ?2'
-	)
-		.bind(classification, productId)
-		.all();
+async function fetchSimilar(classification: string, env: Env, productId: string | null = null): Promise<string[]> {
+	let ready;
+	if (productId === null) {
+		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1').bind(classification);
+	} else {
+		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
+			classification,
+			productId
+		);
+	}
+	const { success: sameSuccess, results: sameResults } = await ready.all();
+
 	if (!sameSuccess) throw new Error('Failed to find similar products');
-	// This typing is guaranteed from the SQL statement.
-	const productIdObjs = sameResults as { productid: string }[];
+	const productIdObjs = sameResults as { productid: string }[]; // Safe
 	return productIdObjs.map(({ productid }) => productid);
 }
 
@@ -121,22 +179,65 @@ export interface Env {
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const reqBody = await parseRequest(request);
-		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env);
-		const classification = await handleClassification(reqBody.id, env, ctx);
-		const similar = await fetchSimilar(reqBody.id, classification, env);
+		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env, ctx);
+		const productClass = await handleClassification(reqBody.id, env, ctx);
+		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
 		const { success: historySuccess, results: historyResults } = await historyPromise;
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
 		if (!historySuccess) throw new Error('Failed to get user history');
-		// TODO: do something with this (recommender system)
-		// This typing is guaranteed from the SQL statement.
-		const historyObjs = (historyResults as HistoryCols[]).sort((a, b) => a.lastvisited - b.lastvisited);
+
+		// Content-based filtering -- still not sure if all this is bug-free.
+		const classToWeight = calcClassToWeight(reqBody.id, productClass, historyResults as HistoryCols[] /* safe */);
+		const weightedProducts = (await Promise.all(
+			Object.entries(classToWeight).map(([classification, weight]) =>
+				(classification === productClass ? similarPromise : fetchSimilar(classification, env)).then((products) => [products, weight])
+			)
+		)) as [string[], number][];
+		const similar = [];
+		for (
+			let i = 0;
+			i <
+			Math.min(
+				NUM_RECOMMENDATIONS,
+				weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
+			);
+			i++
+		) {
+			let bar = 0;
+			whileLoop: while (true) {
+				const rand = Math.random();
+				for (const [i, [products, weight]] of weightedProducts.entries()) {
+					if (rand - bar > weight && i !== weightedProducts.length - 1 /* in case of floating point weirdness */) {
+						bar += weight;
+						continue;
+					}
+
+					const idx = Math.floor(Math.random() * products.length);
+					const product = products[idx];
+					// Efficiently remove product from array.
+					products[idx] = products[products.length - 1];
+					products.pop();
+					similar.push(product);
+
+					if (products.length === 0) {
+						// This is fine since we're breaking out of the for loop immediately after.
+						weightedProducts.splice(i, 1);
+						for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
+							// Set the total area to 1 again.
+							weightedProducts[i][1] = (otherWeight * 1) / (1 - weight);
+						}
+					}
+					break whileLoop;
+				}
+			}
+		}
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
 		for (const id of similar) {
 			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>`;
 		}
-		recommendations += `<a class="list-group-item" href="/products/2">Sushi</a>`; // TODO: remove
+		// recommendations += `<a class="list-group-item" href="/products/2">Sushi</a>`; // TODO: remove
 		recommendations += '</ul>';
 
 		const json = JSON.stringify({ recommendations });

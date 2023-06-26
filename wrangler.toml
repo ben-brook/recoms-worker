@@ -8,4 +8,4 @@ database_name = "dev-db-classes"
 database_id = "6c175af6-e8b1-4d3b-b7ab-078be5435239"
 
 [triggers]
-crons = ["0 17 * * fri"]
+crons = ["0 17 L * *"]
