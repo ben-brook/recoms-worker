@@ -172,6 +172,60 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	return productIdObjs.map(({ productid }) => productid);
 }
 
+async function cbf(
+	classToWeight: Record<string, number>,
+	similarPromise: Promise<string[]>,
+	curClass: string,
+	env: Env
+): Promise<string[]> {
+	const weightedProducts = (await Promise.all(
+		Object.entries(classToWeight).map(([classification, weight]) =>
+			(classification === curClass ? similarPromise : fetchSimilar(classification, env)).then((products) => [products, weight])
+		)
+	)) as [string[], number][];
+
+	const similar = [];
+	for (
+		let i = 0;
+		i <
+		Math.min(
+			NUM_RECOMMENDATIONS,
+			weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
+		);
+		i++
+	) {
+		let bar = 0;
+		whileLoop: while (true) {
+			const rand = Math.random();
+			for (const [i, [products, weight]] of weightedProducts.entries()) {
+				if (rand - bar > weight && i !== weightedProducts.length - 1 /* in case of floating point weirdness */) {
+					bar += weight;
+					continue;
+				}
+
+				const idx = Math.floor(Math.random() * products.length);
+				const product = products[idx];
+				// Efficiently remove product from array.
+				products[idx] = products[products.length - 1];
+				products.pop();
+				similar.push(product);
+
+				if (products.length === 0) {
+					// This is fine since we're breaking out of the for loop immediately after.
+					weightedProducts.splice(i, 1);
+					for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
+						// Set the total area to 1 again.
+						weightedProducts[i][1] = (otherWeight * 1) / (1 - weight);
+					}
+				}
+				break whileLoop;
+			}
+		}
+	}
+
+	return similar;
+}
+
 export interface Env {
 	DB: D1Database;
 }
@@ -189,53 +243,11 @@ export default {
 
 		// Content-based filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(reqBody.id, productClass, historyResults as HistoryCols[] /* safe */);
-		const weightedProducts = (await Promise.all(
-			Object.entries(classToWeight).map(([classification, weight]) =>
-				(classification === productClass ? similarPromise : fetchSimilar(classification, env)).then((products) => [products, weight])
-			)
-		)) as [string[], number][];
-		const similar = [];
-		for (
-			let i = 0;
-			i <
-			Math.min(
-				NUM_RECOMMENDATIONS,
-				weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
-			);
-			i++
-		) {
-			let bar = 0;
-			whileLoop: while (true) {
-				const rand = Math.random();
-				for (const [i, [products, weight]] of weightedProducts.entries()) {
-					if (rand - bar > weight && i !== weightedProducts.length - 1 /* in case of floating point weirdness */) {
-						bar += weight;
-						continue;
-					}
-
-					const idx = Math.floor(Math.random() * products.length);
-					const product = products[idx];
-					// Efficiently remove product from array.
-					products[idx] = products[products.length - 1];
-					products.pop();
-					similar.push(product);
-
-					if (products.length === 0) {
-						// This is fine since we're breaking out of the for loop immediately after.
-						weightedProducts.splice(i, 1);
-						for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
-							// Set the total area to 1 again.
-							weightedProducts[i][1] = (otherWeight * 1) / (1 - weight);
-						}
-					}
-					break whileLoop;
-				}
-			}
-		}
+		const similar = await cbf(classToWeight, similarPromise, productClass, env);
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
 		for (const id of similar) {
-			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>`;
+			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>\n`;
 		}
 		// recommendations += `<a class="list-group-item" href="/products/2">Sushi</a>`; // TODO: remove
 		recommendations += '</ul>';
