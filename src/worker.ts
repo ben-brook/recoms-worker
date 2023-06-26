@@ -105,31 +105,6 @@ function handleHistory(
 	return [promise, didMakeCookie ? authCookie : null];
 }
 
-function calcClassToWeight(curProductId: string, curClass: string, historyResults: HistoryCols[]) {
-	const historyObjs = historyResults.sort((a, b) => a.lastvisited - b.lastvisited);
-	const classToWeight: Record<string, number> = {};
-
-	let total = 0;
-	for (const [i, classification] of [curClass]
-		// The current product should get shift to the front.
-		.concat(historyObjs.filter(({ productid }) => productid != curProductId).map(({ classification }) => classification))
-		.entries()) {
-		// We integrate the exponential distribution.
-		const increase = (Math.exp(HISTORY_LAMBDA) - 1) / Math.exp(HISTORY_LAMBDA * (i + 1));
-		classToWeight[classification] = increase + (classToWeight[classification] || 0);
-		total += increase;
-	}
-
-	const scale = 1 / total;
-	for (const classification of Object.keys(classToWeight)) {
-		// Scale each weight up such that the total weight is 1. This doesn't feel like the best approach.
-		classToWeight[classification] *= scale;
-		console.log(`${classification}: ${classToWeight[classification]}`);
-	}
-
-	return classToWeight;
-}
-
 type ProductCols = { classification: string; lastupdated: number };
 async function handleClassification(productId: string, env: Env, ctx: ExecutionContext): Promise<string> {
 	const { success, results } = await env.DB.prepare('SELECT classification, lastupdated FROM products WHERE productid = ?1')
@@ -171,6 +146,31 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	if (!sameSuccess) throw new Error('Failed to find similar products');
 	const productIdObjs = sameResults as { productid: string }[]; // Safe
 	return productIdObjs.map(({ productid }) => productid);
+}
+
+function calcClassToWeight(curProductId: string, curClass: string, historyResults: HistoryCols[]) {
+	const historyObjs = historyResults.sort((a, b) => a.lastvisited - b.lastvisited);
+	const classToWeight: Record<string, number> = {};
+
+	let total = 0;
+	for (const [i, classification] of [curClass]
+		// The current product should get shift to the front.
+		.concat(historyObjs.filter(({ productid }) => productid != curProductId).map(({ classification }) => classification))
+		.entries()) {
+		// We integrate the exponential distribution.
+		const increase = (Math.exp(HISTORY_LAMBDA) - 1) / Math.exp(HISTORY_LAMBDA * (i + 1));
+		classToWeight[classification] = increase + (classToWeight[classification] || 0);
+		total += increase;
+	}
+
+	const scale = 1 / total;
+	for (const classification of Object.keys(classToWeight)) {
+		// Scale each weight up such that the total weight is 1. This doesn't feel like the best approach.
+		classToWeight[classification] *= scale;
+		console.log(`${classification}: ${classToWeight[classification]}`);
+	}
+
+	return classToWeight;
 }
 
 async function cbf(
