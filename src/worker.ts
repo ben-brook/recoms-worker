@@ -111,8 +111,7 @@ async function handleClassification(productId: string, env: Env, ctx: ExecutionC
 		.bind(productId)
 		.all();
 	if (!success) throw new Error('Failed to check for product classification');
-	// The type is guranteed by the Client API.
-	const classResults = results as ProductCols[];
+	const classResults = results as ProductCols[]; // Safe by Client API
 
 	let classification: string;
 	if (!classResults || classResults.length === 0) {
