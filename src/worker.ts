@@ -258,7 +258,7 @@ export default {
 		return response;
 	},
 
-	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+	async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
 		await env.DB.prepare(`DELETE FROM userhistory WHERE ?1 - lastvisited > ${HISTORY_MAX_AGE_MS}`).bind(Date.now()).run();
 	},
 };
