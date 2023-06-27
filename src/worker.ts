@@ -238,6 +238,7 @@ export default {
 		if (!historySuccess) throw new Error('Failed to get user history');
 
 		// Content-based filtering -- still not sure if all this is bug-free.
+		// TODO: Don't recommend the current product to users, and don't re-recommend recently visited products either.
 		const classToWeight = calcClassToWeight(reqBody.id, productClass, historyResults as HistoryCols[] /* safe */);
 		const similar = await cbf(classToWeight, similarPromise, productClass, env);
 
