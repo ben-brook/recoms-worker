@@ -246,10 +246,10 @@ export default {
 		for (const id of similar) {
 			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>\n`;
 		}
-		// recommendations += `<a class="list-group-item" href="/products/2">Sushi</a>`; // TODO: remove
 		recommendations += '</ul>';
 
 		const json = JSON.stringify({ recommendations });
+		console.log(json);
 		const response = new Response(json);
 		response.headers.set('content-type', 'application/json;charset=UTF-8');
 		if (newCookie) {
