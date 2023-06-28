@@ -134,7 +134,6 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	if (productId === null) {
 		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1').bind(classification);
 	} else {
-		// TODO: possibly remove this?
 		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
 			classification,
 			productId
