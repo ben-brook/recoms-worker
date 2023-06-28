@@ -81,10 +81,10 @@ function handleHistory(
 				products.lastupdated
 			FROM userhistory
 			INNER JOIN products USING (productid)
-			WHERE cookie = ?1
-			ORDER BY lastvisited DESC LIMIT ?2`
+			WHERE cookie = ?2 AND NOT productid = ?1
+			ORDER BY lastvisited DESC LIMIT ?3`
 		)
-			.bind(authCookie, HISTORY_LIMIT)
+			.bind(productId, authCookie, HISTORY_LIMIT)
 			.all();
 
 		promise.then(({ success, results }) => {
@@ -147,14 +147,14 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	return productIdObjs.map(({ productid }) => productid);
 }
 
-function calcClassToWeight(curProductId: string, curClass: string, historyResults: HistoryCols[]) {
+function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 	const historyObjs = historyResults.sort((a, b) => a.lastvisited - b.lastvisited);
 	const classToWeight: Record<string, number> = {};
 
 	let total = 0;
 	for (const [i, classification] of [curClass]
 		// The current product should get shift to the front.
-		.concat(historyObjs.filter(({ productid }) => productid != curProductId).map(({ classification }) => classification))
+		.concat(historyObjs.map(({ classification }) => classification))
 		.entries()) {
 		// We integrate the exponential distribution.
 		const increase = (Math.exp(HISTORY_LAMBDA) - 1) / Math.exp(HISTORY_LAMBDA * (i + 1));
@@ -172,6 +172,15 @@ function calcClassToWeight(curProductId: string, curClass: string, historyResult
 	return classToWeight;
 }
 
+function removeFromWeighted(weightedProducts: [string[], number][], idx: number) {
+	const weight = weightedProducts[idx][1];
+	weightedProducts.splice(idx, 1);
+	for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
+		// We set the total area to 1 again.
+		weightedProducts[i][1] = otherWeight / (1 - weight);
+	}
+}
+
 async function cbf(
 	classToWeight: Record<string, number>,
 	similarPromise: Promise<string[]>,
@@ -184,12 +193,16 @@ async function cbf(
 		)
 	)) as [string[], number][];
 
+	if (weightedProducts[0][0].length === 0) {
+		removeFromWeighted(weightedProducts, 0);
+	}
+
 	const similar = [];
 	const upper = Math.min(
 		NUM_RECOMMENDATIONS,
 		weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
 	);
-	for (let i = 0; i < upper; i++) {
+	for (let it = 0; it < upper; it++) {
 		let bar = 0;
 		whileLoop: while (true) {
 			const rand = Math.random();
@@ -208,11 +221,7 @@ async function cbf(
 
 				if (products.length === 0) {
 					// This is fine since we're breaking out of the for loop immediately after.
-					weightedProducts.splice(i, 1);
-					for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
-						// Set the total area to 1 again.
-						weightedProducts[i][1] = (otherWeight * 1) / (1 - weight);
-					}
+					removeFromWeighted(weightedProducts, i);
 				}
 				break whileLoop;
 			}
@@ -231,15 +240,14 @@ export default {
 		const reqBody = await parseRequest(request);
 		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env, ctx);
 		const productClass = await handleClassification(reqBody.id, env, ctx);
-		const similarPromise = fetchSimilar(productClass, env);
+		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
 		const { success: historySuccess, results: historyResults } = await historyPromise;
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
 		if (!historySuccess) throw new Error('Failed to get user history');
 
 		// Content-based filtering -- still not sure if all this is bug-free.
-		// TODO: Don't recommend the current product to users, and don't re-recommend recently visited products either.
-		const classToWeight = calcClassToWeight(reqBody.id, productClass, historyResults as HistoryCols[] /* safe */);
+		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
 		const similar = await cbf(classToWeight, similarPromise, productClass, env);
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
