@@ -9,12 +9,16 @@ const HISTORY_LAMBDA = 0.1;
 const HISTORY_LIMIT = 20;
 const NUM_RECOMMENDATIONS = 2;
 
+function isObject(o: unknown): o is Record<string, unknown> {
+	return typeof o === 'object' && o !== null;
+}
+
 interface ReqBody {
 	pic: string;
 	id: string;
 }
-function isReqBody(o: any): o is ReqBody {
-	return 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
+function isReqBody(o: unknown): o is ReqBody {
+	return isObject(o) && 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
 }
 
 const tempClassificationMap: { [id: string]: string } = {
@@ -183,7 +187,7 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 function removeFromWeighted(weightedProducts: [string[], number][], idx: number) {
 	const weight = weightedProducts[idx][1];
 	weightedProducts.splice(idx, 1);
-	for (const [i, [_, otherWeight]] of weightedProducts.entries()) {
+	for (const [i, [, otherWeight]] of weightedProducts.entries()) {
 		// We set the total area to 1 again.
 		weightedProducts[i][1] = otherWeight / (1 - weight);
 	}
@@ -212,7 +216,7 @@ async function cbf(
 	);
 	for (let it = 0; it < upper; it++) {
 		let bar = 0;
-		whileLoop: while (true) {
+		infLoop: for (;;) {
 			const rand = Math.random();
 			for (const [i, [products, weight]] of weightedProducts.entries()) {
 				if (rand - bar > weight && i !== weightedProducts.length - 1 /* in case of floating point weirdness */) {
@@ -231,7 +235,7 @@ async function cbf(
 					// This is fine since we're breaking out of the for loop immediately after.
 					removeFromWeighted(weightedProducts, i);
 				}
-				break whileLoop;
+				break infLoop;
 			}
 		}
 	}
@@ -273,7 +277,7 @@ export default {
 		return response;
 	},
 
-	async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
+	async scheduled(_event: ScheduledEvent, env: Env) {
 		await env.DB.prepare(`DELETE FROM userhistory WHERE ?1 - lastvisited > ${HISTORY_MAX_AGE_MS}`).bind(Date.now()).run();
 	},
 };
