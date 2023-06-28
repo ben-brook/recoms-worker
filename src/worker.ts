@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { parse } from 'cookie';
+// import { Tensor, run } from '@cloudflare/constellation';
 
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
@@ -214,7 +215,7 @@ async function cbf(
 		NUM_RECOMMENDATIONS,
 		weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
 	);
-	for (let it = 0; it < upper; it++) {
+	for (let itn = 0; itn < upper; itn++) {
 		let bar = 0;
 		infLoop: for (;;) {
 			const rand = Math.random();
