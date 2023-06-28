@@ -1,10 +1,16 @@
 name = "recoms-worker"
 main = "src/worker.ts"
 compatibility_date = "2023-06-26"
+node_compat = true
 
-[[constellation]]
-binding = 'CLASSIFIER'
-project_id = '0b8bd627-d588-4419-8301-eb457ea94ac5'
+# [[constellation]]
+# binding = 'CLASSIFIER'
+# project_id = '0b8bd627-d588-4419-8301-eb457ea94ac5'
+
+constellation = [
+    {binding = 'CLASSIFIER', project_id = '0b8bd627-d588-4419-8301-eb457ea94ac5'},
+]
+
 
 [[d1_databases]]
 binding = "DB"

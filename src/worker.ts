@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { parse } from 'cookie';
-// import { Tensor, run } from '@cloudflare/constellation';
+// @ts-expect-error: Constellation is currently untyped.
+import { Tensor, run } from '@cloudflare/constellation';
+import jpeg from 'jpeg-js';
 
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
@@ -10,49 +12,46 @@ const HISTORY_LAMBDA = 0.1;
 const HISTORY_LIMIT = 20;
 const NUM_RECOMMENDATIONS = 2;
 
-function isObject(o: unknown): o is Record<string, unknown> {
-	return typeof o === 'object' && o !== null;
-}
+export default {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const reqBody = await parseRequest(request);
+		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env);
+		const productClass = await handleClassification(reqBody, env, ctx);
+		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
-interface ReqBody {
-	pic: string;
-	id: string;
-}
-function isReqBody(o: unknown): o is ReqBody {
-	return isObject(o) && 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
-}
+		const { success: historySuccess, results: historyResults } = await historyPromise;
+		// Maybe we should handle this earlier to save on redundant HTTP requests.
+		if (!historySuccess) throw new Error('Failed to get user history');
 
-const tempClassificationMap: { [id: string]: string } = {
-	'1': 'clothing',
-	'2': 'food',
+		// Content-based filtering -- still not sure if all this is bug-free.
+		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
+		const similar = await cbf(classToWeight, similarPromise, productClass, env);
+
+		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
+		for (const id of similar) {
+			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>\n`;
+		}
+		recommendations += '</ul>';
+
+		const json = JSON.stringify({ recommendations });
+		const response = new Response(json);
+		response.headers.set('content-type', 'application/json;charset=UTF-8');
+		if (newCookie) {
+			response.headers.set('Set-Cookie', `${AUTH_COOKIE_NAME}=${newCookie}; Max-Age=${AUTH_COOKIE_MAX_AGE_S}; path=/; secure`);
+		}
+		return response;
+	},
+
+	async scheduled(_event: ScheduledEvent, env: Env) {
+		await env.DB.prepare(`DELETE FROM userhistory WHERE ?1 - lastvisited > ${HISTORY_MAX_AGE_MS}`).bind(Date.now()).run();
+	},
 };
-async function classify(productId: string, env: Env): Promise<string> {
-	// TODO: Interface Constellation when we get access, but for now...
-	const classification = tempClassificationMap[productId];
-	const { success } = await env.DB.prepare(
-		// ON CONFLICT is an SQLite feature and isn't standard.
-		`INSERT INTO products VALUES (?1, ?2, ?3)
-    	ON CONFLICT(productid) DO UPDATE SET
-        	classification = excluded.classification,
-        	lastupdated = excluded.lastupdated`
-	)
-		.bind(productId, classification, Date.now())
-		.run();
-	if (!success) throw new Error('Failed to register classification');
 
-	return classification;
-}
-
-async function addToHistory(productId: string, cookie: string, env: Env) {
-	const { success } = await env.DB.prepare(
-		`INSERT INTO userhistory VALUES (?1, ?2, ?3)
-		ON CONFLICT(cookie, productid) DO UPDATE SET
-			lastvisited = excluded.lastvisited`
-	)
-		.bind(cookie, productId, Date.now())
-		.run();
-
-	if (!success) throw new Error('Failed to add product to history');
+export interface Env {
+	DB: D1Database;
+	// Constellation is currently untyped.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	CLASSIFIER: any;
 }
 
 async function parseRequest(request: Request): Promise<ReqBody> {
@@ -66,17 +65,19 @@ async function parseRequest(request: Request): Promise<ReqBody> {
 	return reqBody;
 }
 
-interface Result {
-	success: boolean;
-	results?: HistoryCols[];
+interface ReqBody {
+	pic: string;
+	id: string;
 }
-interface HistoryCols {
-	productid: string;
-	lastvisited: number;
-	classification: string;
-	lastupdated: number;
+function isReqBody(o: unknown): o is ReqBody {
+	return isObject(o) && 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
 }
-function handleHistory(headers: Headers, productId: string, env: Env, ctx: ExecutionContext): [Promise<Result>, string | null] {
+
+function isObject(o: unknown): o is Record<string, unknown> {
+	return typeof o === 'object' && o !== null;
+}
+
+function handleHistory(headers: Headers, productId: string, env: Env): [Promise<Result>, string | null] {
 	const cookies = parse(headers.get('Cookie') || '');
 	let authCookie = cookies[AUTH_COOKIE_NAME];
 	let didMakeCookie = false;
@@ -95,14 +96,6 @@ function handleHistory(headers: Headers, productId: string, env: Env, ctx: Execu
 		)
 			.bind(productId, authCookie, HISTORY_LIMIT)
 			.all();
-
-		promise.then(({ success, results }) => {
-			if (!success) return;
-			for (const result of (results as HistoryCols[]).filter((result) => Date.now() - result.lastupdated >= UPDATE_THRESHOLD_MS)) {
-				// We classify the picture for next time, but don't wait for it to be classified this time.
-				ctx.waitUntil(classify(result.productid, env));
-			}
-		});
 	} else {
 		promise = new Promise((resolve) => {
 			resolve({ success: true, results: [] });
@@ -116,13 +109,68 @@ function handleHistory(headers: Headers, productId: string, env: Env, ctx: Execu
 	return [promise, didMakeCookie ? authCookie : null];
 }
 
-interface ProductCols {
+interface Result {
+	success: boolean;
+	results?: HistoryCols[];
+}
+
+interface HistoryCols {
+	productid: string;
+	lastvisited: number;
 	classification: string;
 	lastupdated: number;
 }
-async function handleClassification(productId: string, env: Env, ctx: ExecutionContext): Promise<string> {
+
+const tempClassificationMap: { [id: string]: string } = {
+	'1': 'clothing',
+	'2': 'food',
+};
+async function classify(product: ReqBody, env: Env): Promise<string> {
+	const input = await decodePic(product.pic);
+	const tensorInput = new Tensor('float32', [1, 3, input.height, input.width], input.data);
+	for (const p in env.CLASSIFIER) {
+		console.log(p);
+	}
+	console.log(`foo ${env.CLASSIFIER.run}`);
+	const output = await run(env.CLASSIFIER, 'cdfb1bfb-37b2-4678-84b8-f05cc695d780', tensorInput);
+	console.log(tensorInput);
+	const classification = 'clothing';
+
+	const { success } = await env.DB.prepare(
+		// ON CONFLICT is an SQLite feature and isn't standard.
+		`INSERT INTO products VALUES (?1, ?2, ?3)
+    	ON CONFLICT(productid) DO UPDATE SET
+        	classification = excluded.classification,
+        	lastupdated = excluded.lastupdated`
+	)
+		.bind(product.id, classification, Date.now())
+		.run();
+	if (!success) throw new Error('Failed to register classification');
+
+	return classification;
+}
+
+async function decodePic(pic: string) {
+	const response = await fetch(pic);
+	const buffer = await response.arrayBuffer();
+	return jpeg.decode(buffer, { useTArray: true, formatAsRGBA: false });
+}
+
+async function addToHistory(productId: string, cookie: string, env: Env) {
+	const { success } = await env.DB.prepare(
+		`INSERT INTO userhistory VALUES (?1, ?2, ?3)
+		ON CONFLICT(cookie, productid) DO UPDATE SET
+			lastvisited = excluded.lastvisited`
+	)
+		.bind(cookie, productId, Date.now())
+		.run();
+
+	if (!success) throw new Error('Failed to add product to history');
+}
+
+async function handleClassification(product: ReqBody, env: Env, ctx: ExecutionContext): Promise<string> {
 	const { success, results } = await env.DB.prepare('SELECT classification, lastupdated FROM products WHERE productid = ?1')
-		.bind(productId)
+		.bind(product.id)
 		.all();
 	if (!success) throw new Error('Failed to check for product classification');
 	const classResults = results as ProductCols[]; // Safe by Client API
@@ -130,17 +178,22 @@ async function handleClassification(productId: string, env: Env, ctx: ExecutionC
 	let classification: string;
 	if (!classResults || classResults.length === 0) {
 		// The picture has never been classified before.
-		classification = await classify(productId, env);
+		classification = await classify(product, env);
 	} else {
 		const { classification: storedClass, lastupdated } = classResults[0];
 		classification = storedClass;
 		if (Date.now() - lastupdated >= UPDATE_THRESHOLD_MS) {
 			// We classify the picture for next time, but don't wait for it to be classified this time.
-			ctx.waitUntil(classify(productId, env));
+			ctx.waitUntil(classify(product, env));
 		}
 	}
 
 	return classification;
+}
+
+interface ProductCols {
+	classification: string;
+	lastupdated: number;
 }
 
 async function fetchSimilar(classification: string, env: Env, productId: string | null = null): Promise<string[]> {
@@ -165,7 +218,7 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 	const classToWeight: Record<string, number> = {};
 
 	let total = 0;
-	for (const [i, classification] of [curClass]
+	for (const [i, classification] of [curClass] // We give the current product's class a big boost, i.e. 'more like this'.
 		// The current product should get shift to the front.
 		.concat(historyObjs.map(({ classification }) => classification))
 		.entries()) {
@@ -183,15 +236,6 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 	}
 
 	return classToWeight;
-}
-
-function removeFromWeighted(weightedProducts: [string[], number][], idx: number) {
-	const weight = weightedProducts[idx][1];
-	weightedProducts.splice(idx, 1);
-	for (const [i, [, otherWeight]] of weightedProducts.entries()) {
-		// We set the total area to 1 again.
-		weightedProducts[i][1] = otherWeight / (1 - weight);
-	}
 }
 
 async function cbf(
@@ -244,41 +288,11 @@ async function cbf(
 	return similar;
 }
 
-export interface Env {
-	DB: D1Database;
+function removeFromWeighted(weightedProducts: [string[], number][], idx: number) {
+	const weight = weightedProducts[idx][1];
+	weightedProducts.splice(idx, 1);
+	for (const [i, [, otherWeight]] of weightedProducts.entries()) {
+		// We set the total area to 1 again.
+		weightedProducts[i][1] = otherWeight / (1 - weight);
+	}
 }
-
-export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const reqBody = await parseRequest(request);
-		const [historyPromise, newCookie] = handleHistory(request.headers, reqBody.id, env, ctx);
-		const productClass = await handleClassification(reqBody.id, env, ctx);
-		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
-
-		const { success: historySuccess, results: historyResults } = await historyPromise;
-		// Maybe we should handle this earlier to save on redundant HTTP requests.
-		if (!historySuccess) throw new Error('Failed to get user history');
-
-		// Content-based filtering -- still not sure if all this is bug-free.
-		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		const similar = await cbf(classToWeight, similarPromise, productClass, env);
-
-		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
-		for (const id of similar) {
-			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>\n`;
-		}
-		recommendations += '</ul>';
-
-		const json = JSON.stringify({ recommendations });
-		const response = new Response(json);
-		response.headers.set('content-type', 'application/json;charset=UTF-8');
-		if (newCookie) {
-			response.headers.set('Set-Cookie', `${AUTH_COOKIE_NAME}=${newCookie}; Max-Age=${AUTH_COOKIE_MAX_AGE_S}; path=/; secure`);
-		}
-		return response;
-	},
-
-	async scheduled(_event: ScheduledEvent, env: Env) {
-		await env.DB.prepare(`DELETE FROM userhistory WHERE ?1 - lastvisited > ${HISTORY_MAX_AGE_MS}`).bind(Date.now()).run();
-	},
-};

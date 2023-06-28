@@ -3,22 +3,30 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"deploy": "export NO_D1_WARNING=true && wrangler deploy",
-		"start": "export NO_D1_WARNING=true && wrangler dev"
+		"deploy": "export NO_D1_WARNING=true NO_CONSTELLATION_WARNING=true && wrangler deploy src/worker.ts",
+		"start": "export NO_D1_WARNING=true NO_CONSTELLATION_WARNING=true && wrangler dev src/worker.ts",
+		"fresh": "export NO_D1_WARNING=true NO_CONSTELLATION_WARNING=true && wrangler d1 execute dev-db-classes --file=./schema.sql --local && npm start"
 	},
 	"devDependencies": {
 		"@cloudflare/constellation": "^0.0.12",
 		"@cloudflare/workers-types": "^4.20230419.0",
 		"@types/cookie": "^0.5.1",
+		"@types/node": "^20.3.2",
 		"@types/uuid": "^9.0.2",
 		"@typescript-eslint/eslint-plugin": "^5.60.1",
 		"@typescript-eslint/parser": "^5.60.1",
 		"cookie": "^0.5.0",
 		"eslint": "^8.43.0",
 		"eslint-config-prettier": "^8.8.0",
+		"jpeg-js": "^0.4.4",
+		"npm": "^9.7.2",
 		"prettier": "2.8.8",
 		"typescript": "^5.0.4",
 		"uuid": "^9.0.0",
 		"wrangler": "^3.0.0"
-	}
+	},
+	"dependencies": {
+		"jimp": "^0.22.8"
+	},
+	"type": "commonjs"
 }
