@@ -2,10 +2,14 @@ name = "recoms-worker"
 main = "src/worker.ts"
 compatibility_date = "2023-06-26"
 
+[[constellation]]
+binding = 'CLASSIFIER'
+project_id = '0b8bd627-d588-4419-8301-eb457ea94ac5'
+
 [[d1_databases]]
 binding = "DB"
 database_name = "dev-db-classes"
-database_id = "6c175af6-e8b1-4d3b-b7ab-078be5435239"
+database_id = "c58f81c9-1b7e-4022-9d52-25a64c6ff6d4"
 
 [triggers]
 crons = ["0 17 L * *"]

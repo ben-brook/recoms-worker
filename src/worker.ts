@@ -61,17 +61,21 @@ async function parseRequest(request: Request): Promise<ReqBody> {
 	return reqBody;
 }
 
-type HistoryCols = { productid: string; lastvisited: number; classification: string; lastupdated: number };
-function handleHistory(
-	headers: Headers,
-	productId: string,
-	env: Env,
-	ctx: ExecutionContext
-): [Promise<D1Result<HistoryCols>>, string | null] {
+interface Result {
+	success: boolean;
+	results?: HistoryCols[];
+}
+interface HistoryCols {
+	productid: string;
+	lastvisited: number;
+	classification: string;
+	lastupdated: number;
+}
+function handleHistory(headers: Headers, productId: string, env: Env, ctx: ExecutionContext): [Promise<Result>, string | null] {
 	const cookies = parse(headers.get('Cookie') || '');
 	let authCookie = cookies[AUTH_COOKIE_NAME];
 	let didMakeCookie = false;
-	let promise: Promise<D1Result<HistoryCols>>;
+	let promise: Promise<Result>;
 	if (authCookie) {
 		promise = env.DB.prepare(
 			`SELECT
@@ -95,7 +99,9 @@ function handleHistory(
 			}
 		});
 	} else {
-		promise = new Promise(() => ({ success: true, results: [] }));
+		promise = new Promise((resolve) => {
+			resolve({ success: true, results: [] });
+		});
 		didMakeCookie = true;
 		authCookie = uuidv4();
 	}
@@ -105,7 +111,10 @@ function handleHistory(
 	return [promise, didMakeCookie ? authCookie : null];
 }
 
-type ProductCols = { classification: string; lastupdated: number };
+interface ProductCols {
+	classification: string;
+	lastupdated: number;
+}
 async function handleClassification(productId: string, env: Env, ctx: ExecutionContext): Promise<string> {
 	const { success, results } = await env.DB.prepare('SELECT classification, lastupdated FROM products WHERE productid = ?1')
 		.bind(productId)
@@ -256,7 +265,6 @@ export default {
 		recommendations += '</ul>';
 
 		const json = JSON.stringify({ recommendations });
-		console.log(json);
 		const response = new Response(json);
 		response.headers.set('content-type', 'application/json;charset=UTF-8');
 		if (newCookie) {

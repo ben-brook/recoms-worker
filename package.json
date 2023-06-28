@@ -7,6 +7,7 @@
 		"start": "export NO_D1_WARNING=true && wrangler dev"
 	},
 	"devDependencies": {
+		"@cloudflare/constellation": "^0.0.12",
 		"@cloudflare/workers-types": "^4.20230419.0",
 		"@types/cookie": "^0.5.1",
 		"@types/uuid": "^9.0.2",
