@@ -12,9 +12,9 @@ const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
 const AUTH_COOKIE_NAME = 'authCookie';
 const HISTORY_MAX_AGE_MS = 27 * 24 * 60 * 60 * 1_000;
-const HISTORY_LAMBDA = 0.1;
+const HISTORY_LAMBDA = 0.4;
 const HISTORY_LIMIT = 20;
-const NUM_RECOMMENDATIONS = 2;
+const NUM_RECOMMENDATIONS = 10;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
 
 export default {
@@ -30,11 +30,15 @@ export default {
 
 		// Content-based filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
+		for (const classification of Object.keys(classToWeight)) {
+			console.log(`${classification}: ${classToWeight[classification]}`);
+		}
 		const similar = await cbf(classToWeight, similarPromise, productClass, env);
+		console.log(similar);
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
 		for (const id of similar) {
-			recommendations += `<a class="list-group-item" href="/products/${id}">An item</a>\n`;
+			recommendations += `<a class="list-group-item" href="/products/${id[0]}">${id[1]}</a>\n`;
 		}
 		recommendations += '</ul>';
 
@@ -72,9 +76,18 @@ async function parseRequest(request: Request): Promise<ReqBody> {
 interface ReqBody {
 	pic: string;
 	id: string;
+	name: string;
 }
 function isReqBody(o: unknown): o is ReqBody {
-	return isObject(o) && 'pic' in o && typeof o.pic === 'string' && 'id' in o && typeof o.id === 'string';
+	return (
+		isObject(o) &&
+		'pic' in o &&
+		typeof o.pic === 'string' &&
+		'id' in o &&
+		typeof o.id === 'string' &&
+		'name' in o &&
+		typeof o.name === 'string'
+	);
 }
 
 function isObject(o: unknown): o is Record<string, unknown> {
@@ -91,6 +104,7 @@ async function handleHistory(headers: Headers, productId: string, env: Env): Pro
 			`SELECT
 				userhistory.productid,
 				userhistory.lastvisited,
+				products.name,
 				products.classification,
 				products.lastupdated
 			FROM userhistory
@@ -121,6 +135,7 @@ interface Result {
 interface HistoryCols {
 	productid: string;
 	lastvisited: number;
+	name: string;
 	classification: string;
 	lastupdated: number;
 }
@@ -158,6 +173,7 @@ async function handleClassification(product: ReqBody, env: Env, ctx: ExecutionCo
 		}
 	}
 
+	console.log(classification);
 	return classification;
 }
 
@@ -181,16 +197,16 @@ async function classify(product: ReqBody, env: Env): Promise<string> {
 	const softmaxResult = softmax(predictions);
 	const results = topClasses(softmaxResult, 5);
 	const classification = results[0];
-	console.log(classification);
 
 	const { success } = await env.DB.prepare(
 		// ON CONFLICT is an SQLite feature and isn't standard.
-		`INSERT INTO products VALUES (?1, ?2, ?3)
+		`INSERT INTO products VALUES (?1, ?2, ?3, ?4)
     	ON CONFLICT(productid) DO UPDATE SET
+			name = excluded.name,
         	classification = excluded.classification,
         	lastupdated = excluded.lastupdated`
 	)
-		.bind(product.id, classification.id, Date.now())
+		.bind(product.id, product.name, classification.id, Date.now())
 		.run();
 	if (!success) throw new Error('Failed to register classification');
 
@@ -271,12 +287,12 @@ export function topClasses(classProbabilities: any, n = 5) {
 	return top;
 }
 
-async function fetchSimilar(classification: string, env: Env, productId: string | null = null): Promise<string[]> {
+async function fetchSimilar(classification: string, env: Env, productId: string | null = null): Promise<string[][]> {
 	let ready;
 	if (productId === null) {
-		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1').bind(classification);
+		ready = env.DB.prepare('SELECT productid, name FROM products WHERE classification = ?1').bind(classification);
 	} else {
-		ready = env.DB.prepare('SELECT productid FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
+		ready = env.DB.prepare('SELECT productid, name FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
 			classification,
 			productId
 		);
@@ -284,8 +300,8 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	const { success: sameSuccess, results: sameResults } = await ready.all();
 
 	if (!sameSuccess) throw new Error('Failed to find similar products');
-	const productIdObjs = sameResults as { productid: string }[]; // Safe
-	return productIdObjs.map(({ productid }) => productid);
+	const productIdObjs = sameResults as { productid: string; name: string }[]; // Safe
+	return productIdObjs.map(({ productid, name }) => [productid, name]);
 }
 
 function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
@@ -307,7 +323,6 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 	for (const classification of Object.keys(classToWeight)) {
 		// Scale each weight up such that the total weight is 1. This doesn't feel like the best approach.
 		classToWeight[classification] *= scale;
-		console.log(`${classification}: ${classToWeight[classification]}`);
 	}
 
 	return classToWeight;
@@ -315,15 +330,15 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 
 async function cbf(
 	classToWeight: Record<string, number>,
-	similarPromise: Promise<string[]>,
+	similarPromise: Promise<string[][]>,
 	curClass: string,
 	env: Env
-): Promise<string[]> {
+): Promise<string[][]> {
 	const weightedProducts = (await Promise.all(
 		Object.entries(classToWeight).map(([classification, weight]) =>
 			(classification === curClass ? similarPromise : fetchSimilar(classification, env)).then((products) => [products, weight])
 		)
-	)) as [string[], number][];
+	)) as [string[][], number][];
 
 	if (weightedProducts[0][0].length === 0) {
 		removeFromWeighted(weightedProducts, 0);
@@ -363,7 +378,7 @@ async function cbf(
 	return similar;
 }
 
-function removeFromWeighted(weightedProducts: [string[], number][], idx: number) {
+function removeFromWeighted(weightedProducts: [string[][], number][], idx: number) {
 	const weight = weightedProducts[idx][1];
 	weightedProducts.splice(idx, 1);
 	for (const [i, [, otherWeight]] of weightedProducts.entries()) {
