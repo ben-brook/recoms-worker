@@ -10,17 +10,18 @@ import str from 'string-to-stream';
 
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
-const AUTH_COOKIE_NAME = 'authCookie';
+const AUTH_COOKIE_NAME = 'id-cookie';
 const HISTORY_MAX_AGE_MS = 27 * 24 * 60 * 60 * 1_000;
 const HISTORY_LAMBDA = 0.4;
 const HISTORY_LIMIT = 20;
-const NUM_RECOMMENDATIONS = 10;
+const NUM_RECOMMENDATIONS = 6;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const reqBody = await parseRequest(request);
 		const [historyPromise, newCookie] = await handleHistory(request.headers, reqBody.id, env);
+		console.log(newCookie);
 		const productClass = await handleClassification(reqBody, env, ctx);
 		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
@@ -38,7 +39,12 @@ export default {
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
 		for (const id of similar) {
-			recommendations += `<a class="list-group-item" href="/products/${id[0]}">${id[1]}</a>\n`;
+			recommendations += `<a class="list-group-item" href="/products/${id[0]}">
+	${id[1]}
+	<span class="pull-left ">
+        <img src="${id[2]}" class="img-reponsive img-rounded" style="width:100px; height:100px;" />
+    </span>
+</a>\n`;
 		}
 		recommendations += '</ul>';
 
@@ -105,6 +111,7 @@ async function handleHistory(headers: Headers, productId: string, env: Env): Pro
 				userhistory.productid,
 				userhistory.lastvisited,
 				products.name,
+				products.picture,
 				products.classification,
 				products.lastupdated
 			FROM userhistory
@@ -136,6 +143,7 @@ interface HistoryCols {
 	productid: string;
 	lastvisited: number;
 	name: string;
+	picture: string;
 	classification: string;
 	lastupdated: number;
 }
@@ -200,13 +208,14 @@ async function classify(product: ReqBody, env: Env): Promise<string> {
 
 	const { success } = await env.DB.prepare(
 		// ON CONFLICT is an SQLite feature and isn't standard.
-		`INSERT INTO products VALUES (?1, ?2, ?3, ?4)
+		`INSERT INTO products VALUES (?1, ?2, ?3, ?4, ?5)
     	ON CONFLICT(productid) DO UPDATE SET
 			name = excluded.name,
+			picture = excluded.picture,
         	classification = excluded.classification,
         	lastupdated = excluded.lastupdated`
 	)
-		.bind(product.id, product.name, classification.id, Date.now())
+		.bind(product.id, product.name, product.pic, classification.id, Date.now())
 		.run();
 	if (!success) throw new Error('Failed to register classification');
 
@@ -290,9 +299,9 @@ export function topClasses(classProbabilities: any, n = 5) {
 async function fetchSimilar(classification: string, env: Env, productId: string | null = null): Promise<string[][]> {
 	let ready;
 	if (productId === null) {
-		ready = env.DB.prepare('SELECT productid, name FROM products WHERE classification = ?1').bind(classification);
+		ready = env.DB.prepare('SELECT productid, name, picture FROM products WHERE classification = ?1').bind(classification);
 	} else {
-		ready = env.DB.prepare('SELECT productid, name FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
+		ready = env.DB.prepare('SELECT productid, name, picture FROM products WHERE classification = ?1 AND NOT productid = ?2').bind(
 			classification,
 			productId
 		);
@@ -300,8 +309,8 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	const { success: sameSuccess, results: sameResults } = await ready.all();
 
 	if (!sameSuccess) throw new Error('Failed to find similar products');
-	const productIdObjs = sameResults as { productid: string; name: string }[]; // Safe
-	return productIdObjs.map(({ productid, name }) => [productid, name]);
+	const productIdObjs = sameResults as { productid: string; name: string; picture: string }[]; // Safe
+	return productIdObjs.map(({ productid, name, picture }) => [productid, name, picture]);
 }
 
 function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
