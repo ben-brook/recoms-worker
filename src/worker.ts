@@ -12,8 +12,8 @@ const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
 const AUTH_COOKIE_NAME = 'id-cookie';
 const HISTORY_MAX_AGE_MS = 27 * 24 * 60 * 60 * 1_000;
-const HISTORY_LAMBDA = 0.4;
-const HISTORY_LIMIT = 20;
+const HISTORY_LAMBDA = 0.1;
+const HISTORY_LIMIT = 40;
 const NUM_RECOMMENDATIONS = 6;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
 
@@ -21,7 +21,6 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const reqBody = await parseRequest(request);
 		const [historyPromise, newCookie] = await handleHistory(request.headers, reqBody.id, env);
-		console.log(newCookie);
 		const productClass = await handleClassification(reqBody, env, ctx);
 		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
@@ -31,13 +30,9 @@ export default {
 
 		// Content-based filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		for (const classification of Object.keys(classToWeight)) {
-			console.log(`${classification}: ${classToWeight[classification]}`);
-		}
 		const similar = await cbf(classToWeight, similarPromise, productClass, env);
-		console.log(similar);
 
-		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
+		let recommendations = `<ul class="list-group list-group-horizontal"> ${productClass}\n`;
 		for (const id of similar) {
 			recommendations += `<a class="list-group-item" href="/products/${id[0]}">
 	${id[1]}
@@ -129,7 +124,7 @@ async function handleHistory(headers: Headers, productId: string, env: Env): Pro
 		authCookie = uuidv4();
 	}
 
-	addToHistory(productId, authCookie, env);
+	updateHistory(productId, authCookie, env);
 
 	return [promise, didMakeCookie ? authCookie : null];
 }
@@ -148,7 +143,7 @@ interface HistoryCols {
 	lastupdated: number;
 }
 
-async function addToHistory(productId: string, cookie: string, env: Env) {
+async function updateHistory(productId: string, cookie: string, env: Env) {
 	const { success } = await env.DB.prepare(
 		`INSERT INTO userhistory VALUES (?1, ?2, ?3)
 		ON CONFLICT(cookie, productid) DO UPDATE SET
@@ -181,7 +176,6 @@ async function handleClassification(product: ReqBody, env: Env, ctx: ExecutionCo
 		}
 	}
 
-	console.log(classification);
 	return classification;
 }
 
@@ -314,13 +308,12 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 }
 
 function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
-	const historyObjs = historyResults.sort((a, b) => a.lastvisited - b.lastvisited);
 	const classToWeight: Record<string, number> = {};
 
 	let total = 0;
 	for (const [i, classification] of [curClass] // We give the current product's class a big boost, i.e. 'more like this'.
 		// The current product should get shift to the front.
-		.concat(historyObjs.map(({ classification }) => classification))
+		.concat(historyResults.map(({ classification }) => classification))
 		.entries()) {
 		// We integrate the exponential distribution.
 		const increase = (Math.exp(HISTORY_LAMBDA) - 1) / Math.exp(HISTORY_LAMBDA * (i + 1));
