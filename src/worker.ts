@@ -32,7 +32,7 @@ export default {
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
 		const similar = await cbf(classToWeight, similarPromise, productClass, env);
 
-		let recommendations = `<ul class="list-group list-group-horizontal"> ${productClass}\n`;
+		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
 		for (const id of similar) {
 			recommendations += `<a class="list-group-item" href="/products/${id[0]}">
 	${id[1]}
