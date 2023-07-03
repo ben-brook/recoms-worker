@@ -7,6 +7,8 @@ import { imagenetClasses } from './imagenet';
 // @ts-expect-error: pngjs/browser's types don't work.
 import { PNG } from 'pngjs/browser';
 import str from 'string-to-stream';
+import { h64, UINT } from 'xxhashjs';
+import { MaxHeap } from '@datastructures-js/heap';
 
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 const AUTH_COOKIE_MAX_AGE_S = 86_400 * 365;
@@ -16,11 +18,14 @@ const HISTORY_LAMBDA = 0.1;
 const HISTORY_LIMIT = 40;
 const NUM_RECOMMENDATIONS = 6;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
+const NUM_HASHES = 256; // for MinHash
+const DISTANCE_THRESHOLD = 0.6; // for collab filtering; Jaccard distance
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const reqBody = await parseRequest(request);
-		const [historyPromise, newCookie] = await handleHistory(request.headers, reqBody.id, env);
+		const cookie = parse(request.headers.get('Cookie') || '')[AUTH_COOKIE_NAME];
+		const [historyPromise, newCookie] = await handleHistory(cookie, reqBody.id, env);
 		const productClass = await handleClassification(reqBody, env, ctx);
 		const similarPromise = fetchSimilar(productClass, env, reqBody.id);
 
@@ -28,12 +33,13 @@ export default {
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
 		if (!historySuccess) throw new Error('Failed to get user history');
 
-		// Content-based filtering -- still not sure if all this is bug-free.
+		// Filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		const similar = await cbf(classToWeight, similarPromise, productClass, env);
+		const similarCb = await cbFiltering(classToWeight, similarPromise, productClass, env);
+		const similarCollab = await collabFiltering((cookie ? cookie : newCookie) as string, env);
 
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
-		for (const id of similar) {
+		for (const id of similarCb) {
 			recommendations += `<a class="list-group-item" href="/products/${id[0]}">
 	${id[1]}
 	<span class="pull-left ">
@@ -65,9 +71,7 @@ export interface Env {
 
 async function parseRequest(request: Request): Promise<ReqBody> {
 	const { pathname } = new URL(request.url);
-	if (pathname !== '/api/recommendations') {
-		throw new Error('Unrecognised pathname');
-	}
+	if (pathname !== '/api/recommendations') throw new Error('Unrecognised pathname');
 	const encodedReqBody = await request.text();
 	const reqBody = JSON.parse(decodeURIComponent(encodedReqBody));
 	if (!isReqBody(reqBody)) throw new Error('Request body is wrong');
@@ -95,12 +99,10 @@ function isObject(o: unknown): o is Record<string, unknown> {
 	return typeof o === 'object' && o !== null;
 }
 
-async function handleHistory(headers: Headers, productId: string, env: Env): Promise<[Promise<Result>, string | null]> {
-	const cookies = parse(headers.get('Cookie') || '');
-	let authCookie = cookies[AUTH_COOKIE_NAME];
+async function handleHistory(cookie: string | undefined, productId: string, env: Env): Promise<[Promise<Result>, string | null]> {
 	let didMakeCookie = false;
 	let promise: Promise<Result>;
-	if (authCookie) {
+	if (cookie) {
 		promise = env.DB.prepare(
 			`SELECT
 				userhistory.productid,
@@ -114,19 +116,19 @@ async function handleHistory(headers: Headers, productId: string, env: Env): Pro
 			WHERE cookie = ?2 AND NOT productid = ?1
 			ORDER BY lastvisited DESC LIMIT ?3`
 		)
-			.bind(productId, authCookie, HISTORY_LIMIT)
+			.bind(productId, cookie, HISTORY_LIMIT)
 			.all();
 	} else {
 		promise = new Promise((resolve) => {
 			resolve({ success: true, results: [] });
 		});
 		didMakeCookie = true;
-		authCookie = uuidv4();
+		cookie = uuidv4();
 	}
 
-	updateHistory(productId, authCookie, env);
+	updateHistory(productId, cookie, env);
 
-	return [promise, didMakeCookie ? authCookie : null];
+	return [promise, didMakeCookie ? cookie : null];
 }
 
 interface Result {
@@ -184,10 +186,6 @@ interface ProductCols {
 	lastupdated: number;
 }
 
-// const tempClassificationMap: { [id: string]: string } = {
-// 	'1': 'clothing',
-// 	'2': 'food',
-// };
 async function classify(product: ReqBody, env: Env): Promise<string> {
 	const response = await fetch(product.pic);
 	const data = await response.arrayBuffer();
@@ -330,7 +328,7 @@ function calcClassToWeight(curClass: string, historyResults: HistoryCols[]) {
 	return classToWeight;
 }
 
-async function cbf(
+async function cbFiltering(
 	classToWeight: Record<string, number>,
 	similarPromise: Promise<string[][]>,
 	curClass: string,
@@ -387,4 +385,75 @@ function removeFromWeighted(weightedProducts: [string[][], number][], idx: numbe
 		// We set the total area to 1 again.
 		weightedProducts[i][1] = otherWeight / (1 - weight);
 	}
+}
+
+async function collabFiltering(ownCookie: string, env: Env) {
+	const { success, results } = await env.DB.prepare('SELECT * FROM userhistory').all();
+	if (!success) throw new Error('Failed to fetch userhistory');
+	const userHistory = results as UserHistoryCols[];
+	const userToElements: Record<string, string[]> = {};
+	for (const { cookie, productid, lastvisited } of userHistory) {
+		if (Date.now() - lastvisited > HISTORY_MAX_AGE_MS) continue;
+		if (!userToElements[cookie]) {
+			userToElements[cookie] = [];
+		}
+		userToElements[cookie].push(productid);
+	}
+
+	const ownHashes = minHash(userToElements[ownCookie] || []);
+	const similarUsers = [];
+	for (const [user, elements] of Object.entries(userToElements)) {
+		if (user == ownCookie) continue;
+
+		const hashes = minHash(elements);
+		const ownHashesCp = ownHashes.clone();
+		const total = hashes.size() + ownHashes.size();
+		let intersection = 0;
+		while (!hashes.isEmpty() && !ownHashes.isEmpty()) {
+			if (hashes.top() == ownHashes.top()) {
+				intersection++;
+				hashes.pop();
+				ownHashes.pop();
+			} else if ((hashes.top() as UINT) < (ownHashesCp.top() as UINT)) {
+				hashes.pop();
+			} else {
+				ownHashes.pop();
+			}
+		}
+
+		const union = total - intersection;
+		if (intersection / union > DISTANCE_THRESHOLD) {
+			similarUsers.push(user);
+		}
+	}
+}
+
+interface UserHistoryCols {
+	cookie: string;
+	productid: string;
+	lastvisited: number;
+}
+
+// https://cs.brown.edu/courses/cs253/papers/nearduplicate.pdf
+// http://web.eecs.utk.edu/~jplank/plank/classes/cs494/494/notes/Min-Hash/index.html
+// MinHash with one hash function.
+function minHash(elements: string[]): MaxHeap<UINT> {
+	const hashes = new MaxHeap<UINT>();
+	const seen = new Set();
+	for (const element of elements) {
+		const hash = h64(element, 0xabcd);
+		if (seen.has(hash)) continue;
+		seen.add(hash);
+
+		if (hashes.size() < NUM_HASHES) {
+			hashes.push(hash);
+		} else if (hash > (hashes.top() as UINT)) {
+			hashes.push(hash);
+			if (hashes.size() > NUM_HASHES) {
+				hashes.pop();
+			}
+		}
+	}
+
+	return hashes;
 }
