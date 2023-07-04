@@ -7,7 +7,7 @@ import { imagenetClasses } from './imagenet';
 // @ts-expect-error: pngjs/browser's types don't work.
 import { PNG } from 'pngjs/browser';
 import str from 'string-to-stream';
-import { h64, UINT } from 'xxhashjs';
+import { h64 } from 'xxhashjs';
 import { MaxHeap } from '@datastructures-js/heap';
 
 const UPDATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -16,10 +16,11 @@ const AUTH_COOKIE_NAME = 'id-cookie';
 const HISTORY_MAX_AGE_MS = 27 * 24 * 60 * 60 * 1_000;
 const HISTORY_LAMBDA = 0.1;
 const HISTORY_LIMIT = 40;
-const NUM_RECOMMENDATIONS = 6;
+const NUM_CB_RECOMMENDATIONS = 3;
+const NUM_COLLAB_RECOMMENDATIONS = 3;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
 const NUM_HASHES = 256; // for MinHash
-const DISTANCE_THRESHOLD = 0.6; // for collab filtering; Jaccard distance
+const COLLAB_ADDITIONS_CAP = 40;
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -35,15 +36,25 @@ export default {
 
 		// Filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		const similarCb = await cbFiltering(classToWeight, similarPromise, productClass, env);
-		const similarCollab = await collabFiltering((cookie ? cookie : newCookie) as string, env);
+		const similarCollabPromises = await collabFiltering((cookie ? cookie : newCookie) as string, env);
+		console.log(`total: ${similarCollabPromises.length}`);
+		const similarCb = await cbFiltering(
+			classToWeight,
+			similarPromise,
+			productClass,
+			NUM_CB_RECOMMENDATIONS + NUM_COLLAB_RECOMMENDATIONS - similarCollabPromises.length,
+			env
+		);
 
+		const similarCollab = await Promise.all(similarCollabPromises);
+		const similar = similarCb.concat(similarCollab);
+		shuffle(similar);
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
-		for (const id of similarCb) {
-			recommendations += `<a class="list-group-item" href="/products/${id[0]}">
-	${id[1]}
+		for (const product of similar) {
+			recommendations += `<a class="list-group-item" href="/products/${product[0]}">
+	${product[1]}
 	<span class="pull-left ">
-        <img src="${id[2]}" class="img-reponsive img-rounded" style="width:100px; height:100px;" />
+        <img src="${product[2]}" class="img-reponsive img-rounded" style="width:100px; height:100px;" />
     </span>
 </a>\n`;
 		}
@@ -332,6 +343,7 @@ async function cbFiltering(
 	classToWeight: Record<string, number>,
 	similarPromise: Promise<string[][]>,
 	curClass: string,
+	amount: number,
 	env: Env
 ): Promise<string[][]> {
 	const weightedProducts = (await Promise.all(
@@ -346,7 +358,7 @@ async function cbFiltering(
 
 	const similar = [];
 	const upper = Math.min(
-		NUM_RECOMMENDATIONS,
+		amount,
 		weightedProducts.reduce((count, [products]) => count + products.length, 0) // Number of products
 	);
 	for (let itn = 0; itn < upper; itn++) {
@@ -387,45 +399,101 @@ function removeFromWeighted(weightedProducts: [string[][], number][], idx: numbe
 	}
 }
 
-async function collabFiltering(ownCookie: string, env: Env) {
+async function collabFiltering(ownCookie: string, env: Env): Promise<Promise<string[]>[]> {
 	const { success, results } = await env.DB.prepare('SELECT * FROM userhistory').all();
 	if (!success) throw new Error('Failed to fetch userhistory');
 	const userHistory = results as UserHistoryCols[];
-	const userToElements: Record<string, string[]> = {};
+	const userToElements: Record<string, Set<string>> = {};
 	for (const { cookie, productid, lastvisited } of userHistory) {
 		if (Date.now() - lastvisited > HISTORY_MAX_AGE_MS) continue;
 		if (!userToElements[cookie]) {
-			userToElements[cookie] = [];
+			userToElements[cookie] = new Set();
 		}
-		userToElements[cookie].push(productid);
+		userToElements[cookie].add(productid);
 	}
 
-	const ownHashes = minHash(userToElements[ownCookie] || []);
-	const similarUsers = [];
+	const ownHashes = minHash(userToElements[ownCookie] || new Set());
+	const similarUsers = new MaxHeap<[string, number]>((userData) => userData[1]);
 	for (const [user, elements] of Object.entries(userToElements)) {
 		if (user == ownCookie) continue;
 
 		const hashes = minHash(elements);
 		const ownHashesCp = ownHashes.clone();
-		const total = hashes.size() + ownHashes.size();
+
+		const total = hashes.size() + ownHashesCp.size();
 		let intersection = 0;
-		while (!hashes.isEmpty() && !ownHashes.isEmpty()) {
-			if (hashes.top() == ownHashes.top()) {
+		while (!hashes.isEmpty() && !ownHashesCp.isEmpty()) {
+			if (hashes.top() === ownHashesCp.top()) {
 				intersection++;
 				hashes.pop();
-				ownHashes.pop();
-			} else if ((hashes.top() as UINT) < (ownHashesCp.top() as UINT)) {
-				hashes.pop();
+				ownHashesCp.pop();
+			} else if ((hashes.top() as number) < (ownHashesCp.top() as number)) {
+				ownHashesCp.pop();
 			} else {
-				ownHashes.pop();
+				hashes.pop();
 			}
 		}
-
 		const union = total - intersection;
-		if (intersection / union > DISTANCE_THRESHOLD) {
-			similarUsers.push(user);
+		console.log(`${user}: i${intersection} t${total} u${union}`);
+		similarUsers.push([user, intersection / union]);
+	}
+
+	console.log(similarUsers.top());
+	let additions = 0;
+	let total = 0;
+	const productToWeight: Record<string, number> = {};
+	while (!similarUsers.isEmpty() && additions < COLLAB_ADDITIONS_CAP) {
+		const [user, distance] = similarUsers.pop() as [string, number];
+		for (const product of userToElements[user].values()) {
+			if (userToElements[ownCookie].has(product)) continue;
+			productToWeight[product] = (productToWeight[product] || 0) + distance;
+			total += productToWeight[product];
+		}
+
+		additions += 1;
+	}
+
+	let size = 0;
+	for (const key of Object.keys(productToWeight)) {
+		size++;
+		productToWeight[key] = productToWeight[key] / total;
+		console.log(`k${key} v${productToWeight[key]}`);
+	}
+
+	const similar = [];
+	const upper = Math.min(NUM_COLLAB_RECOMMENDATIONS, size);
+	for (let itn = 0; itn < upper; itn++) {
+		let bar = 0;
+		infLoop: for (;;) {
+			const rand = Math.random();
+			let i = 0;
+			for (const [product, weight] of Object.entries(productToWeight)) {
+				if (rand - bar > weight && i !== productToWeight.length - 1 /* in case of floating point weirdness */) {
+					bar += weight;
+					i++;
+					continue;
+				}
+
+				similar.push(
+					(async () => {
+						const { success, results } = await env.DB.prepare('SELECT productid, name, picture FROM products WHERE productid = ?1')
+							.bind(product)
+							.all();
+						if (!success) {
+							return ['0', '', ''];
+						}
+						const tResults = results as Record<string, string>[];
+						return [tResults[0].productid, tResults[0].name, tResults[0].picture];
+					})()
+				);
+
+				delete productToWeight[product];
+				break infLoop;
+			}
 		}
 	}
+
+	return similar;
 }
 
 interface UserHistoryCols {
@@ -437,17 +505,17 @@ interface UserHistoryCols {
 // https://cs.brown.edu/courses/cs253/papers/nearduplicate.pdf
 // http://web.eecs.utk.edu/~jplank/plank/classes/cs494/494/notes/Min-Hash/index.html
 // MinHash with one hash function.
-function minHash(elements: string[]): MaxHeap<UINT> {
-	const hashes = new MaxHeap<UINT>();
+function minHash(elements: Set<string>): MaxHeap<number> {
+	const hashes = new MaxHeap<number>();
 	const seen = new Set();
 	for (const element of elements) {
-		const hash = h64(element, 0xabcd);
+		const hash = h64(element, 0xabcd).toNumber();
 		if (seen.has(hash)) continue;
 		seen.add(hash);
 
 		if (hashes.size() < NUM_HASHES) {
 			hashes.push(hash);
-		} else if (hash > (hashes.top() as UINT)) {
+		} else if (hash > (hashes.top() as number)) {
 			hashes.push(hash);
 			if (hashes.size() > NUM_HASHES) {
 				hashes.pop();
@@ -456,4 +524,12 @@ function minHash(elements: string[]): MaxHeap<UINT> {
 	}
 
 	return hashes;
+}
+
+// https://stackoverflow.com/questions/2450954/how-to-randomize-shuffle-a-javascript-array
+function shuffle<T>(array: T[]) {
+	for (let i = array.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[array[i], array[j]] = [array[j], array[i]];
+	}
 }
