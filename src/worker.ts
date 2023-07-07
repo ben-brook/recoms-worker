@@ -36,7 +36,7 @@ export default {
 
 		// Filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		const similarCollabPromises = await collabFiltering((cookie ? cookie : newCookie) as string, env);
+		const similarCollabPromises = await collabFiltering((cookie ? cookie : newCookie) as string, reqBody.id, env);
 		console.log(`total: ${similarCollabPromises.length}`);
 		const similarCb = await cbFiltering(
 			classToWeight,
@@ -399,7 +399,7 @@ function removeFromWeighted(weightedProducts: [string[][], number][], idx: numbe
 	}
 }
 
-async function collabFiltering(ownCookie: string, env: Env): Promise<Promise<string[]>[]> {
+async function collabFiltering(ownCookie: string, curProduct: string, env: Env): Promise<Promise<string[]>[]> {
 	const { success, results } = await env.DB.prepare('SELECT * FROM userhistory').all();
 	if (!success) throw new Error('Failed to fetch userhistory');
 	const userHistory = results as UserHistoryCols[];
@@ -445,7 +445,7 @@ async function collabFiltering(ownCookie: string, env: Env): Promise<Promise<str
 	while (!similarUsers.isEmpty() && additions < COLLAB_ADDITIONS_CAP) {
 		const [user, distance] = similarUsers.pop() as [string, number];
 		for (const product of userToElements[user].values()) {
-			if (userToElements[ownCookie].has(product)) continue;
+			if (userToElements[ownCookie].has(product) || product == curProduct) continue;
 			productToWeight[product] = (productToWeight[product] || 0) + distance;
 			total += productToWeight[product];
 		}
