@@ -34,7 +34,6 @@ export default {
 		// Maybe we should handle this earlier to save on redundant HTTP requests.
 		if (!historySuccess) throw new Error('Failed to get user history');
 
-		// Filtering -- still not sure if all this is bug-free.
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
 		const similarCollabPromises = await collabFiltering((cookie ? cookie : newCookie) as string, reqBody.id, env);
 		console.log(`total: ${similarCollabPromises.length}`);
@@ -178,7 +177,6 @@ async function handleClassification(product: ReqBody, env: Env, ctx: ExecutionCo
 	let classification: string;
 	if (!classResults || classResults.length === 0) {
 		// The picture has never been classified before.
-		// classification = await classify(product, jimpPromise, env);
 		classification = await classify(product, env);
 	} else {
 		const { classification: storedClass, lastupdated } = classResults[0];
