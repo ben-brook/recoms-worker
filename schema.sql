@@ -10,3 +10,9 @@ CREATE TABLE IF NOT EXISTS products (productid TEXT PRIMARY KEY, name TEXT, pict
 
 DROP TABLE IF EXISTS userhistory;
 CREATE TABLE IF NOT EXISTS userhistory (cookie TEXT, productid TEXT, lastvisited INTEGER, PRIMARY KEY (cookie, productid));
+
+DROP TABLE IF EXISTS userminhhs;
+CREATE TABLE IF NOT EXISTS userminhhs (cookie TEXT, minhh INTEGER, PRIMARY KEY (cookie, minhh));
+
+DROP TABLE IF EXISTS minhhusers;
+CREATE TABLE IF NOT EXISTS minhhusers (minhh INTEGER PRIMARY KEY, usercookie TEXT);

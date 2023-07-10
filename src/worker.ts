@@ -19,7 +19,8 @@ const HISTORY_LIMIT = 40;
 const NUM_CB_RECOMMENDATIONS = 3;
 const NUM_COLLAB_RECOMMENDATIONS = 3;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
-const NUM_HASHES = 256; // for MinHash
+const NUM_HASHES = 200; // for MinHashes
+const MIN_HH_SIZE = 4; // for hashes of multiple MinHashes
 const COLLAB_ADDITIONS_CAP = 40;
 
 export default {
@@ -35,7 +36,7 @@ export default {
 		if (!historySuccess) throw new Error('Failed to get user history');
 
 		const classToWeight = calcClassToWeight(productClass, historyResults as HistoryCols[] /* safe */);
-		const similarCollabPromises = await collabFiltering((cookie ? cookie : newCookie) as string, reqBody.id, env);
+		const similarCollabPromises = await collabFiltering2((cookie ? cookie : newCookie) as string, reqBody.id, env);
 		console.log(`total: ${similarCollabPromises.length}`);
 		const similarCb = await cbFiltering(
 			classToWeight,
@@ -397,6 +398,139 @@ function removeFromWeighted(weightedProducts: [string[][], number][], idx: numbe
 	}
 }
 
+async function collabFiltering2(ownCookie: string, curProduct: string, env: Env): Promise<Promise<string[]>[]> {
+	const { success, results } = await env.DB.prepare('SELECT productid, lastvisited FROM userhistory WHERE cookie = ?1')
+		.bind(ownCookie)
+		.all();
+	if (!success) throw new Error('Failed to fetch userhistory');
+	if ((results as OwnHistoryCols[]).length === 0) return [];
+	const products = (results as OwnHistoryCols[]).reduce((set, cols) => {
+		if (Date.now() - cols.lastvisited <= HISTORY_MAX_AGE_MS) {
+			set.add(cols.productid);
+		}
+		return set;
+	}, new Set<string>());
+
+	// likelihood of user being potential candidate = kNUM_HASHES / MIN_HH_SIZE**2
+	const ownHashes = minHashes(products);
+	const hhs = [];
+	const limit = Math.floor(Math.max(NUM_HASHES, ownHashes.size()) / MIN_HH_SIZE);
+	for (let i = 0; i < limit; i++) {
+		let hh = 0;
+		for (let j = 0; j < MIN_HH_SIZE; j++) {
+			hh ^= ownHashes.pop() as number;
+		}
+		hhs.push(hh);
+	}
+
+	// Update own minhhs
+	const prepareDel = env.DB.prepare(
+		`DELETE FROM minhhusers
+		WHERE (
+			minhh IN
+			(SELECT minhh FROM userminhhs WHERE cookie = ?1)
+		)
+		AND usercookie = ?1`
+	).bind(ownCookie);
+	const preparedInsToMinhhusers = env.DB.prepare(`INSERT INTO minhhusers(minhh, usercookie) VALUES(?2, ?1)`).bind(ownCookie);
+	const preparedInsToUserMinhhs = env.DB.prepare(`INSERT INTO userminhhs(cookie, minhh) VALUES(?1, ?2)`).bind(ownCookie);
+	await env.DB.batch([prepareDel, hhs.map((hh) => [preparedInsToUserMinhhs.bind(hh), preparedInsToMinhhusers.bind(hh)])].flat(2));
+
+	const { success: hhSuccess, results: hhResults } = await env.DB.prepare(
+		`SELECT usercookie FROM minhhusers WHERE minhh IN (?1) AND NOT usercookie = ?2`
+	)
+		.bind(hhs.join(', '), ownCookie)
+		.all();
+	if (!hhSuccess) throw new Error('Failed to fetch similar users');
+	const collectedUsers = hhResults as UserCookieCol[];
+	const userToFreq: Record<string, number> = {};
+	for (const { usercookie } of collectedUsers) {
+		userToFreq[usercookie] = (userToFreq[usercookie] || 0) + 1;
+	}
+	const similarUsers = new MaxHeap<[string, number]>((userData) => userData[1]);
+	for (const [user, freq] of Object.entries(userToFreq)) {
+		similarUsers.push([user, freq]);
+	}
+
+	// This method of bucketing doesn't statistically imply how similar each user is in a linear fashion.
+	// Perhaps look into the actual relationship later.
+	const similarUserList = [];
+	for (let i = 0; i < Math.max(COLLAB_ADDITIONS_CAP, similarUsers.size()); i++) {
+		const [cookie] = similarUsers.pop() as [string, number];
+		similarUserList.push(cookie);
+	}
+	const { success: hisSuccess, results: hisResults } = await env.DB.prepare(
+		'SELECT cookie, productid, lastvisited FROM userhistory WHERE cookie IN (?1)'
+	)
+		.bind(similarUserList.join(', '))
+		.all();
+	if (!hisSuccess) throw new Error("Failed to get similar users' histories");
+	const productToWeight: Record<string, number> = {};
+	let total = 0;
+	for (const { productid, lastvisited } of hisResults as SimilarHistoryCols[]) {
+		if (Date.now() - lastvisited > HISTORY_MAX_AGE_MS) continue;
+		productToWeight[productid] = (productToWeight[productid] || 0) + 1;
+		total += 1;
+	}
+
+	let size = 0;
+	for (const key of Object.keys(productToWeight)) {
+		size++;
+		productToWeight[key] = productToWeight[key] / total;
+		console.log(`k${key} v${productToWeight[key]}`);
+	}
+
+	const similar = [];
+	const upper = Math.min(NUM_COLLAB_RECOMMENDATIONS, size);
+	for (let itn = 0; itn < upper; itn++) {
+		let bar = 0;
+		infLoop: for (;;) {
+			const rand = Math.random();
+			let i = 0;
+			for (const [product, weight] of Object.entries(productToWeight)) {
+				if (rand - bar > weight && i !== productToWeight.length - 1 /* in case of floating point weirdness */) {
+					bar += weight;
+					i++;
+					continue;
+				}
+
+				similar.push(
+					(async () => {
+						const { success, results } = await env.DB.prepare('SELECT productid, name, picture FROM products WHERE productid = ?1')
+							.bind(product)
+							.all();
+						if (!success) {
+							return ['0', '', ''];
+						}
+						const tResults = results as Record<string, string>[];
+						return [tResults[0].productid, tResults[0].name, tResults[0].picture];
+					})()
+				);
+
+				delete productToWeight[product];
+				break infLoop;
+			}
+		}
+	}
+
+	return similar;
+}
+
+interface SimilarHistoryCols {
+	cookie: string;
+	productid: string;
+	lastvisited: number;
+}
+
+interface UserCookieCol {
+	usercookie: string;
+}
+
+interface OwnHistoryCols {
+	productid: string;
+	lastvisited: number;
+}
+
 async function collabFiltering(ownCookie: string, curProduct: string, env: Env): Promise<Promise<string[]>[]> {
 	const { success, results } = await env.DB.prepare('SELECT * FROM userhistory').all();
 	if (!success) throw new Error('Failed to fetch userhistory');
@@ -410,12 +544,12 @@ async function collabFiltering(ownCookie: string, curProduct: string, env: Env):
 		userToElements[cookie].add(productid);
 	}
 
-	const ownHashes = minHash(userToElements[ownCookie] || new Set());
+	const ownHashes = minHashes(userToElements[ownCookie] || new Set());
 	const similarUsers = new MaxHeap<[string, number]>((userData) => userData[1]);
 	for (const [user, elements] of Object.entries(userToElements)) {
 		if (user == ownCookie) continue;
 
-		const hashes = minHash(elements);
+		const hashes = minHashes(elements);
 		const ownHashesCp = ownHashes.clone();
 
 		const total = hashes.size() + ownHashesCp.size();
@@ -503,7 +637,7 @@ interface UserHistoryCols {
 // https://cs.brown.edu/courses/cs253/papers/nearduplicate.pdf
 // http://web.eecs.utk.edu/~jplank/plank/classes/cs494/494/notes/Min-Hash/index.html
 // MinHash with one hash function.
-function minHash(elements: Set<string>): MaxHeap<number> {
+function minHashes(elements: Set<string>): MaxHeap<number> {
 	const hashes = new MaxHeap<number>();
 	const seen = new Set();
 	for (const element of elements) {
