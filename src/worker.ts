@@ -414,8 +414,9 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 
 	// likelihood of user being potential candidate = kNUM_HASHES / MIN_HH_SIZE**2
 	const ownHashes = minHashes(products);
+	console.log(ownHashes.toArray());
 	const hhs = [];
-	const limit = Math.floor(Math.max(NUM_HASHES, ownHashes.size()) / MIN_HH_SIZE);
+	const limit = Math.floor(Math.min(NUM_HASHES, ownHashes.size()) / MIN_HH_SIZE);
 	for (let i = 0; i < limit; i++) {
 		let hh = 0;
 		for (let j = 0; j < MIN_HH_SIZE; j++) {
@@ -423,8 +424,10 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 		}
 		hhs.push(hh);
 	}
+	console.log(hhs);
 
 	// Update own minhhs
+	console.log(1);
 	const prepareDel = env.DB.prepare(
 		`DELETE FROM minhhusers
 		WHERE (
@@ -433,9 +436,12 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 		)
 		AND usercookie = ?1`
 	).bind(ownCookie);
-	const preparedInsToMinhhusers = env.DB.prepare(`INSERT INTO minhhusers(minhh, usercookie) VALUES(?2, ?1)`).bind(ownCookie);
-	const preparedInsToUserMinhhs = env.DB.prepare(`INSERT INTO userminhhs(cookie, minhh) VALUES(?1, ?2)`).bind(ownCookie);
-	await env.DB.batch([prepareDel, hhs.map((hh) => [preparedInsToUserMinhhs.bind(hh), preparedInsToMinhhusers.bind(hh)])].flat(2));
+	console.log(2);
+	const preparedInsToMinhhusers = env.DB.prepare(`INSERT INTO minhhusers(minhh, usercookie) VALUES(?2, ?1)`);
+	const preparedInsToUserMinhhs = env.DB.prepare(`INSERT OR IGNORE INTO userminhhs(cookie, minhh) VALUES(?1, ?2)`);
+	await env.DB.batch(
+		[prepareDel, hhs.map((hh) => [preparedInsToUserMinhhs.bind(ownCookie, hh), preparedInsToMinhhusers.bind(ownCookie, hh)])].flat(2)
+	);
 	console.log('b');
 
 	const { success: hhSuccess, results: hhResults } = await env.DB.prepare(
@@ -458,7 +464,7 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 	// This method of bucketing doesn't statistically imply how similar each user is in a linear fashion.
 	// Perhaps look into the actual relationship later.
 	const similarUserList = [];
-	for (let i = 0; i < Math.max(COLLAB_ADDITIONS_CAP, similarUsers.size()); i++) {
+	for (let i = 0; i < Math.min(COLLAB_ADDITIONS_CAP, similarUsers.size()); i++) {
 		const [cookie] = similarUsers.pop() as [string, number];
 		similarUserList.push(cookie);
 	}

@@ -13,4 +13,4 @@ DROP TABLE IF EXISTS userminhhs;
 CREATE TABLE IF NOT EXISTS userminhhs (cookie TEXT, minhh INTEGER, PRIMARY KEY (cookie, minhh));
 
 DROP TABLE IF EXISTS minhhusers;
-CREATE TABLE IF NOT EXISTS minhhusers (minhh INTEGER PRIMARY KEY, usercookie TEXT);
+CREATE TABLE IF NOT EXISTS minhhusers (minhh INTEGER, usercookie TEXT, PRIMARY KEY(minhh, usercookie));
