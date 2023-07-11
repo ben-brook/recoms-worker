@@ -128,7 +128,7 @@ async function handleHistory(cookie: string | undefined, productId: string, env:
 			ORDER BY lastvisited DESC LIMIT ?3`
 		)
 			.bind(productId, cookie, HISTORY_LIMIT)
-			.all();
+			.all() as unknown as Promise<Result>;
 	} else {
 		promise = new Promise((resolve) => {
 			resolve({ success: true, results: [] });
@@ -173,7 +173,7 @@ async function handleClassification(product: ReqBody, env: Env, ctx: ExecutionCo
 		.bind(product.id)
 		.all();
 	if (!success) throw new Error('Failed to check for product classification');
-	const classResults = results as ProductCols[]; // Safe by Client API
+	const classResults = results as unknown as ProductCols[]; // Safe by Client API
 
 	let classification: string;
 	if (!classResults || classResults.length === 0) {
@@ -311,7 +311,7 @@ async function fetchSimilar(classification: string, env: Env, productId: string 
 	const { success: sameSuccess, results: sameResults } = await ready.all();
 
 	if (!sameSuccess) throw new Error('Failed to find similar products');
-	const productIdObjs = sameResults as { productid: string; name: string; picture: string }[]; // Safe
+	const productIdObjs = sameResults as unknown as { productid: string; name: string; picture: string }[]; // Safe
 	return productIdObjs.map(({ productid, name, picture }) => [productid, name, picture]);
 }
 
@@ -399,12 +399,13 @@ function removeFromWeighted(weightedProducts: [string[][], number][], idx: numbe
 }
 
 async function collabFiltering2(ownCookie: string, curProduct: string, env: Env): Promise<Promise<string[]>[]> {
+	console.log('a');
 	const { success, results } = await env.DB.prepare('SELECT productid, lastvisited FROM userhistory WHERE cookie = ?1')
 		.bind(ownCookie)
 		.all();
 	if (!success) throw new Error('Failed to fetch userhistory');
-	if ((results as OwnHistoryCols[]).length === 0) return [];
-	const products = (results as OwnHistoryCols[]).reduce((set, cols) => {
+	if ((results as unknown as OwnHistoryCols[]).length === 0) return [];
+	const products = (results as unknown as OwnHistoryCols[]).reduce((set, cols) => {
 		if (Date.now() - cols.lastvisited <= HISTORY_MAX_AGE_MS) {
 			set.add(cols.productid);
 		}
@@ -435,14 +436,16 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 	const preparedInsToMinhhusers = env.DB.prepare(`INSERT INTO minhhusers(minhh, usercookie) VALUES(?2, ?1)`).bind(ownCookie);
 	const preparedInsToUserMinhhs = env.DB.prepare(`INSERT INTO userminhhs(cookie, minhh) VALUES(?1, ?2)`).bind(ownCookie);
 	await env.DB.batch([prepareDel, hhs.map((hh) => [preparedInsToUserMinhhs.bind(hh), preparedInsToMinhhusers.bind(hh)])].flat(2));
+	console.log('b');
 
 	const { success: hhSuccess, results: hhResults } = await env.DB.prepare(
 		`SELECT usercookie FROM minhhusers WHERE minhh IN (?1) AND NOT usercookie = ?2`
 	)
 		.bind(hhs.join(', '), ownCookie)
 		.all();
+	console.log('c');
 	if (!hhSuccess) throw new Error('Failed to fetch similar users');
-	const collectedUsers = hhResults as UserCookieCol[];
+	const collectedUsers = hhResults as unknown as UserCookieCol[];
 	const userToFreq: Record<string, number> = {};
 	for (const { usercookie } of collectedUsers) {
 		userToFreq[usercookie] = (userToFreq[usercookie] || 0) + 1;
@@ -464,10 +467,11 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 	)
 		.bind(similarUserList.join(', '))
 		.all();
+	console.log('d');
 	if (!hisSuccess) throw new Error("Failed to get similar users' histories");
 	const productToWeight: Record<string, number> = {};
 	let total = 0;
-	for (const { productid, lastvisited } of hisResults as SimilarHistoryCols[]) {
+	for (const { productid, lastvisited } of hisResults as unknown as SimilarHistoryCols[]) {
 		if (Date.now() - lastvisited > HISTORY_MAX_AGE_MS) continue;
 		productToWeight[productid] = (productToWeight[productid] || 0) + 1;
 		total += 1;
@@ -502,7 +506,7 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 						if (!success) {
 							return ['0', '', ''];
 						}
-						const tResults = results as Record<string, string>[];
+						const tResults = results as unknown as Record<string, string>[];
 						return [tResults[0].productid, tResults[0].name, tResults[0].picture];
 					})()
 				);
@@ -534,7 +538,7 @@ interface OwnHistoryCols {
 async function collabFiltering(ownCookie: string, curProduct: string, env: Env): Promise<Promise<string[]>[]> {
 	const { success, results } = await env.DB.prepare('SELECT * FROM userhistory').all();
 	if (!success) throw new Error('Failed to fetch userhistory');
-	const userHistory = results as UserHistoryCols[];
+	const userHistory = results as unknown as UserHistoryCols[];
 	const userToElements: Record<string, Set<string>> = {};
 	for (const { cookie, productid, lastvisited } of userHistory) {
 		if (Date.now() - lastvisited > HISTORY_MAX_AGE_MS) continue;
@@ -614,7 +618,7 @@ async function collabFiltering(ownCookie: string, curProduct: string, env: Env):
 						if (!success) {
 							return ['0', '', ''];
 						}
-						const tResults = results as Record<string, string>[];
+						const tResults = results as unknown as Record<string, string>[];
 						return [tResults[0].productid, tResults[0].name, tResults[0].picture];
 					})()
 				);

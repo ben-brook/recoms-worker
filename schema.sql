@@ -1,10 +1,8 @@
--- npx wrangler d1 execute dev-db-classes --file=./schema.sql --local
--- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM products' --local
--- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM userhistory' --local
-
 -- npx wrangler d1 execute dev-db-classes --file=./schema.sql
 -- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM products'
 -- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM userhistory'
+-- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM userminhhs'
+-- npx wrangler d1 execute dev-db-classes --command='SELECT * FROM minhhusers'
 DROP TABLE IF EXISTS products;
 CREATE TABLE IF NOT EXISTS products (productid TEXT PRIMARY KEY, name TEXT, picture TEXT, classification TEXT, lastupdated INTEGER);
 
