@@ -20,7 +20,7 @@ const NUM_CB_RECOMMENDATIONS = 3;
 const NUM_COLLAB_RECOMMENDATIONS = 3;
 const MODEL_ID = 'cdfb1bfb-37b2-4678-84b8-f05cc695d780';
 const NUM_HASHES = 200; // for MinHashes
-const MIN_HH_SIZE = 4; // for hashes of multiple MinHashes
+const MIN_HH_SIZE = 2; // for hashes of multiple MinHashes
 const COLLAB_ADDITIONS_CAP = 40;
 
 export default {
@@ -47,6 +47,7 @@ export default {
 		);
 
 		const similarCollab = await Promise.all(similarCollabPromises);
+		console.log(similarCollab);
 		const similar = similarCb.concat(similarCollab);
 		shuffle(similar);
 		let recommendations = `<ul class="list-group list-group-horizontal">\n`;
@@ -428,7 +429,7 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 
 	// Update own minhhs
 	console.log(1);
-	const prepareDel = env.DB.prepare(
+	const prepareDelMinhhusers = env.DB.prepare(
 		`DELETE FROM minhhusers
 		WHERE (
 			minhh IN
@@ -436,11 +437,19 @@ async function collabFiltering2(ownCookie: string, curProduct: string, env: Env)
 		)
 		AND usercookie = ?1`
 	).bind(ownCookie);
+	const prepareDelUserminhhs = env.DB.prepare(
+		`DELETE FROM userminhhs
+		WHERE cookie = ?1`
+	).bind(ownCookie);
 	console.log(2);
 	const preparedInsToMinhhusers = env.DB.prepare(`INSERT INTO minhhusers(minhh, usercookie) VALUES(?2, ?1)`);
 	const preparedInsToUserMinhhs = env.DB.prepare(`INSERT OR IGNORE INTO userminhhs(cookie, minhh) VALUES(?1, ?2)`);
 	await env.DB.batch(
-		[prepareDel, hhs.map((hh) => [preparedInsToUserMinhhs.bind(ownCookie, hh), preparedInsToMinhhusers.bind(ownCookie, hh)])].flat(2)
+		[
+			prepareDelMinhhusers,
+			prepareDelUserminhhs,
+			hhs.map((hh) => [preparedInsToUserMinhhs.bind(ownCookie, hh), preparedInsToMinhhusers.bind(ownCookie, hh)]),
+		].flat(2)
 	);
 	console.log('b');
 
