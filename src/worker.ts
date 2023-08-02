@@ -23,8 +23,25 @@ const NUM_HASHES = 200; // for MinHashes
 const MIN_HH_SIZE = 2; // for hashes of multiple MinHashes
 const COLLAB_ADDITIONS_CAP = 40;
 
+let a = undefined;
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const consnModel = env.CLASSIFIER;
+		function getMethods(obj) {
+			var result = [];
+			for (var id in obj) {
+				try {
+					if (typeof obj[id] == 'function') {
+						result.push(id + ': ' + obj[id].toString());
+					}
+				} catch (err) {
+					result.push(id + ': inaccessible');
+				}
+			}
+			return result;
+		}
+		console.log(getMethods(consnModel).join('\n'));
+
 		const reqBody = await parseRequest(request);
 		const cookie = parse(request.headers.get('Cookie') || '')[AUTH_COOKIE_NAME];
 		const [historyPromise, newCookie] = await handleHistory(cookie, reqBody.id, env);
@@ -59,7 +76,7 @@ export default {
 		}
 		recommendations += '</ul>';
 
-		const json = JSON.stringify({ recommendations });
+		const json = JSON.stringify({ recommendations: JSON.stringify(a) });
 		const response = new Response(json);
 		response.headers.set('content-type', 'application/json;charset=UTF-8');
 		if (newCookie) {
@@ -199,8 +216,10 @@ async function classify(product: ReqBody, env: Env): Promise<string> {
 	const response = await fetch(product.pic);
 	const data = await response.arrayBuffer();
 	const input = await decodeImage(data);
+	console.log(input);
 
 	const tensorInput = new Tensor('float32', [1, 3, 224, 224], input);
+	a = input;
 	const output = await run(env.CLASSIFIER, MODEL_ID, tensorInput);
 	const predictions = output.squeezenet0_flatten0_reshape0.value;
 	const softmaxResult = softmax(predictions);
